@@ -1,0 +1,63 @@
+services:
+  mqtt:
+    image: eclipse-mosquitto
+    container_name: herd_mqtt
+    ports:
+      - "1883:1883"
+    volumes:
+      - ./infra/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - ./infra/mosquitto/data:/mosquitto/data
+      - ./infra/mosquitto/log:/mosquitto/log
+
+  redis:
+    image: redis:7
+    container_name: herd_redis
+    ports:
+      - "6379:6379"
+
+  postgres:
+    image: postgres:16
+    container_name: herd_postgres
+    environment:
+      POSTGRES_USER: herd
+      POSTGRES_PASSWORD: herd123
+      POSTGRES_DB: herdmind
+    ports:
+      - "5432:5432"
+
+  edge:
+    build: ./edge
+    container_name: herd_edge
+    depends_on:
+      - mqtt
+
+  ai_service:
+    build: ./services/ai_service
+    container_name: herd_ai_service
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - mqtt
+      - postgres
+
+  risk_service:
+    build: ./services/risk_service
+    container_name: herd_risk_service
+    depends_on:
+      - mqtt
+      - postgres
+
+  alert_service:
+    build: ./services/alert_service
+    container_name: herd_alert_service
+    depends_on:
+      - mqtt
+
+  gateway:
+    build: ./services/gateway_service
+    container_name: herd_gateway
+    ports:
+      - "8000:8000"
+    depends_on:
+      - mqtt
+      - redis
