@@ -6,3 +6,4 @@ infra/mosquitto/data/
 infra/mosquitto/log/
 infra/postgres/
 infra/influxdb/
+infra/grafana/storage/
