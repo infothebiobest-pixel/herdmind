@@ -52,6 +52,14 @@ def main():
     while True:
         for cow_id in tracked_cow_ids:
             payload = generate_cow_telemetry(cow_id)
+            # FORCE AN EMERGENCY ON COW 103 FOR TESTING
+
+            if cow_id == 103:
+                payload["temperature"] = 41.5      # Critical Fever
+                payload["rumination"] = 90.0        # Severe Drop
+                payload["activity"] = 12.0          # Severe Lethargy
+                payload["conductivity"] = 11.5      # Mastitis Marker
+            
             client.publish(MQTT_TOPIC, json.dumps(payload))
             print(f"📤 Sent: Cow {payload['cow_id']} | Temp: {payload['temperature']}°C | Rum: {payload['rumination']} min | Cnd: {payload['conductivity']}")
         time.sleep(5)

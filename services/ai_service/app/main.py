@@ -1,6 +1,7 @@
 import os
 import json
 import numpy as np
+import requests
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 import paho.mqtt.client as mqtt
@@ -15,12 +16,13 @@ from app.storage import write_reading, query_cow_history, query_herd_summary, qu
 MQTT_BROKER = os.getenv("MQTT_BROKER", "mqtt")
 MQTT_PORT = int(os.getenv("MQTT_PORT", 1883))
 MQTT_TOPIC = "herd/sensors/#"
+ALERT_SERVICE_URL = os.getenv("ALERT_SERVICE_URL", "http://herd_alert_service:8002/notify")
 
 # 3. Instantiate the Prediction Engines
 ai_engine = HerdAnomalyEngine()
 disease_classifier = DiseaseClassifier()
 
-# 4. Request Pydantic Schema Validation Layer (Matching all 9 Engine features)
+# 4. Request Pydantic Schema Validation Layer
 class SensorPayload(BaseModel):
     cow_id: int
     temperature: float
@@ -43,33 +45,58 @@ def on_connect(client, userdata, flags, rc):
         print(f"❌ MQTT Connection failed with code: {rc}")
 
 def on_message(client, userdata, msg):
-    """Intercepts telemetries, calculates risk indices via trained ML, and logs to InfluxDB."""
+    """Intercepts telemetries, runs ML inference, saves to InfluxDB, and fires out-of-band alerts."""
     try:
         payload_data = json.loads(msg.payload.decode("utf-8"))
         payload = SensorPayload(**payload_data)
         
-        # Format explicitly as a 2D numpy array with 9 columns for the ML engines
+        # 9-Feature ML Input Matrix
         X = np.array([[
             payload.temperature, payload.rumination, payload.activity,
             payload.milk_yield, payload.conductivity, payload.flow_rate,
             payload.quarter_delta, payload.lying_time, payload.heart_rate
         ]])
         
-        # Execute model inference (Safely decoupled from array index crashes)
         preds = ai_engine.predict(X)
         scores = ai_engine.risk_score(X)
         
-        prediction = int(preds[0]) if hasattr(preds, "__len__") else int(preds)
-        risk = float(scores[0]) if hasattr(scores, "__len__") else float(scores)
+        prediction = int(preds) if hasattr(preds, "__len__") else int(preds)
+        risk = float(scores) if hasattr(scores, "__len__") else float(scores)
         
         alert_data = None
-        if prediction == -1:
-            alert_data = {
-                "alert_level": "CRITICAL" if risk >= 0.8 else "WARNING",
-                "message": f"Machine learning anomaly detected with risk score: {risk:.2f}"
-            }
         
-        # Record into InfluxDB
+        # If ML flags an anomaly, escalate to the Alert Service
+        if prediction == -1:
+            level = "CRITICAL" if risk >= 0.75 else "WARNING"
+            alert_data = {
+                "alert_level": level,
+                "message": f"Machine learning model flagged anomaly pattern. Risk profile index: {risk:.2f}"
+            }
+            
+            # Formulate the payload expected by the Alert Service AlertRequest schema
+            alert_request_payload = {
+                "cow_id": str(payload.cow_id),
+                "alert_level": level,
+                "disease": "Unspecified Bio-Shift" if risk < 0.85 else "Mastitis Indicators",
+                "risk_score": risk,
+                "temperature": payload.temperature,
+                "rumination": payload.rumination,
+                "activity": payload.activity,
+                "message": alert_data["message"],
+                "action": "Inspect cow vitals and isolate from herd immediately."
+            }
+            
+            # Post directly to the Alert Microservice over the internal network fabric
+            try:
+                res = requests.post(ALERT_SERVICE_URL, json=alert_request_payload, timeout=3.0)
+                if res.status_code == 200:
+                    print(f"🚨 [Alert Dispatched] Router notified successfully for Cow {payload.cow_id}")
+                else:
+                    print(f"⚠️ [Alert Failed] Downstream routing microservice rejected post: {res.status_code}")
+            except Exception as http_err:
+                print(f"💥 [Alert Connection Broken] Could not reach alert_service: {http_err}")
+        
+        # Record everything into InfluxDB
         write_reading(
             cow_id=payload.cow_id,
             temperature=payload.temperature,
@@ -80,16 +107,10 @@ def on_message(client, userdata, msg):
             alert=alert_data
         )
         print(f"💾 [Influx Ingested] Cow ID {payload.cow_id} -> Prediction: {prediction}, Risk: {risk:.3f}")
-
-        # Dispatch alerts on critical breaches
-        if prediction == -1:
-            alert_payload = {"cow_id": payload.cow_id, "risk_score": risk, "type": "critical bio shift"}
-            client.publish("herd/alerts/critical", json.dumps(alert_payload))
             
     except Exception as e:
         print(f"💥 Ingestion processing failure: {e}")
 
-# Construct network socket mapping
 mqtt_client = mqtt.Client(client_id="herd_ai_service_client")
 mqtt_client.on_connect = on_connect
 mqtt_client.on_message = on_message
@@ -99,18 +120,13 @@ mqtt_client.on_message = on_message
 async def lifespan(app: FastAPI):
     print("🧠 Bootstrapping AI Engines with synthetic training matrices...")
     try:
-        # Create 1000 sample rows with proper standard variance to make model smarter
         np.random.seed(42)
         base_healthy = np.random.normal(
             loc=[38.7, 450.0, 90.0, 22.0, 5.0, 2.6, 0.4, 11.0, 72.0], 
             scale=[0.8, 80.0, 30.0, 5.0, 2.0, 1.0, 0.3, 3.0, 12.0],
             size=(1000, 9)
         )
-        
-        # Train Anomaly Isolation Forest
         ai_engine.train(base_healthy)
-        
-        # Train Disease Random Forest Classifier (healthy=0)
         labels = np.zeros(1000, dtype=int)
         disease_classifier.train(base_healthy, labels)
         print("✅ Machine Learning models trained and initialized successfully!")
@@ -146,13 +162,9 @@ def predict(payload: SensorPayload):
     ]])
     preds = ai_engine.predict(X)
     scores = ai_engine.risk_score(X)
-    p_val = int(preds[0]) if hasattr(preds, "__len__") else int(preds)
-    r_val = float(scores[0]) if hasattr(scores, "__len__") else float(scores)
-    return {
-        "cow_id": payload.cow_id,
-        "prediction": p_val,
-        "risk_score": r_val
-    }
+    p_val = int(preds) if hasattr(preds, "__len__") else int(preds)
+    r_val = float(scores) if hasattr(scores, "__len__") else float(scores)
+    return {"cow_id": payload.cow_id, "prediction": p_val, "risk_score": r_val}
 
 @app.get("/cows/{cow_id}/history")
 def get_cow_history_endpoint(cow_id: int, hours: Optional[int] = 24):
@@ -168,16 +180,6 @@ def get_cow_latest(cow_id: int):
 @app.get("/herd/summary")
 def get_herd_summary_endpoint(window_hours: Optional[int] = 24):
     return query_herd_summary(hours=window_hours)
-
-@app.get("/herd/at-risk")
-def get_herd_at_risk():
-    cows = query_high_risk_cows(threshold=0.5, hours=1)
-    return [c["cow_id"] for c in cows if c["risk_score"] < 0.8]
-
-@app.get("/herd/critical")
-def get_herd_critical():
-    cows = query_high_risk_cows(threshold=0.8, hours=1)
-    return [c["cow_id"] for c in cows]
 
 if __name__ == "__main__":
     import uvicorn
