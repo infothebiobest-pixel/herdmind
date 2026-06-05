@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.pyc
+.git
+infra/mosquitto/data/
+infra/postgres/
+infra/influxdb/
