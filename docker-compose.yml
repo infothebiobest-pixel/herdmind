@@ -25,6 +25,22 @@ services:
     ports:
       - "5432:5432"
 
+  influxdb:
+    image: influxdb:2.7
+    container_name: herd_influx
+    ports:
+      - "8086:8086"
+    volumes:
+      - ./infra/influxdb/data:/var/lib/influxdb2
+      - ./infra/influxdb/config:/etc/influxdb2
+    environment:
+      - DOCKER_INFLUXDB_INIT_MODE=setup
+      - DOCKER_INFLUXDB_INIT_USERNAME=herdmind
+      - DOCKER_INFLUXDB_INIT_PASSWORD=herdmindpassword123
+      - DOCKER_INFLUXDB_INIT_ORG=herdmind
+      - DOCKER_INFLUXDB_INIT_BUCKET=herd_telemetry
+      - DOCKER_INFLUXDB_INIT_ADMIN_TOKEN=cfuR3oHFeBlAbbiIxas5OcXhTY3CZxkz1_QNkAlVrCu48Y6osB-loG7UcGvP1RlN1lRugY7qsAPgHZiu3JteEA==
+
   edge:
     build: ./edge
     container_name: herd_edge
@@ -39,6 +55,7 @@ services:
     depends_on:
       - mqtt
       - postgres
+      - influxdb
 
   risk_service:
     build: ./services/risk_service

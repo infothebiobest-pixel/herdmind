@@ -39,8 +39,6 @@ THRESHOLDS = {
     "WATCH":    0.5,
 }
 
-# Disease-specific escalation overrides
-# Some diseases warrant immediate CRITICAL regardless of score
 CRITICAL_DISEASES = {"mastitis", "ketosis"}
 
 ACTION_MAP = {
@@ -66,69 +64,47 @@ class RiskRequest(BaseModel):
     cow_id:        str
     anomaly_score: float = Field(..., ge=0.0, le=1.0)
     rule_label:    str
-    ml_label:      str | None = None
+    ml_label:      str
 
 class RiskResponse(BaseModel):
     cow_id:      str
-    risk_score:  float
     alert_level: str
     disease:     str
+    risk_score:  float
     message:     str
     action:      str
-
 
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
 
-@app.get("/health", tags=["system"])
+@app.get("/health")
 def health():
     return {"service": "risk_service", "status": "ok"}
 
-
-@app.post("/evaluate", response_model=RiskResponse, tags=["risk"])
+@app.post("/evaluate", response_model=RiskResponse)
 def evaluate(req: RiskRequest):
-    """
-    Evaluate risk level from anomaly score and disease label.
-    Disease-specific rules can escalate to CRITICAL regardless of score.
-    """
-    disease = req.ml_label or req.rule_label
+    disease = req.rule_label.lower() if req.rule_label != "healthy" else req.ml_label.lower()
+    score = req.anomaly_score
 
-    # Score-based level
-    if req.anomaly_score >= THRESHOLDS["CRITICAL"]:
+    if disease in CRITICAL_DISEASES or score >= THRESHOLDS["CRITICAL"]:
         level = "CRITICAL"
-    elif req.anomaly_score >= THRESHOLDS["WARNING"]:
+    elif score >= THRESHOLDS["WARNING"]:
         level = "WARNING"
-    elif req.anomaly_score >= THRESHOLDS["WATCH"]:
+    elif score >= THRESHOLDS["WATCH"]:
         level = "WATCH"
     else:
         level = "NORMAL"
 
-    # Disease override — mastitis/ketosis always CRITICAL if any anomaly
-    if disease in CRITICAL_DISEASES and req.anomaly_score >= THRESHOLDS["WATCH"]:
-        level = "CRITICAL"
-
-    message = MESSAGE_MAP.get(disease, f"Anomaly detected — disease: {disease}")
-    action  = ACTION_MAP[level]
-
-    log.info("cow_id=%-6s  score=%.3f  disease=%-10s  level=%s",
-             req.cow_id, req.anomaly_score, disease, level)
-
     return RiskResponse(
-        cow_id      = req.cow_id,
-        risk_score  = round(req.anomaly_score, 4),
-        alert_level = level,
-        disease     = disease,
-        message     = message,
-        action      = action,
+        cow_id=req.cow_id,
+        alert_level=level,
+        disease=disease,
+        risk_score=score,
+        message=MESSAGE_MAP.get(disease, f"Unspecified anomaly detected: {disease}"),
+        action=ACTION_MAP[level]
     )
 
-
-@app.get("/thresholds", tags=["config"])
-def get_thresholds():
-    """Return current escalation thresholds."""
-    return {
-        "thresholds":        THRESHOLDS,
-        "critical_diseases": list(CRITICAL_DISEASES),
-        "action_map":        ACTION_MAP,
-    }
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("main:app", host="0.0.0.0", port=8003, reload=False)
