@@ -127,3 +127,8 @@ def generate_dev_token(farmer_id: str = "farmer_001"):
     payload = {"sub": farmer_id, "exp": time.time() + 3600, "role": "administrator"}
     token = jwt.encode(payload, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
     return {"access_token": token, "token_type": "bearer"}
+
+# REMOVED THE IF STATEMENT GUARD ENTIRELY TO FORCE DOCKER RETENTION
+import uvicorn
+uvicorn.run(app, host="0.0.0.0", port=8000)
+
