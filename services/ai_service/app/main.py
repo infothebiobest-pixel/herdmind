@@ -233,3 +233,29 @@ def get_herd_summary_endpoint(window_hours: Optional[int] = 24):
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("app.main:app", host="0.0.0.0", port=8001, reload=False)
+
+
+from app.temporal_engine import rolling_stats, risk_trend, early_warning, herd_early_warnings, cow_timeline
+
+HERD_IDS = [101, 102, 103, 104, 105]
+
+@app.get("/temporal/cow/{cow_id}/trend")
+def cow_risk_trend(cow_id: str, hours: int = 3):
+    return risk_trend(cow_id, hours=hours)
+
+@app.get("/temporal/cow/{cow_id}/stats/{field}")
+def cow_field_stats(cow_id: str, field: str, hours: int = 6):
+    return rolling_stats(cow_id, field, hours=hours)
+
+@app.get("/temporal/cow/{cow_id}/warning")
+def cow_early_warning(cow_id: str):
+    return early_warning(cow_id)
+
+@app.get("/temporal/cow/{cow_id}/timeline")
+def cow_full_timeline(cow_id: str, hours: int = 24):
+    return cow_timeline(cow_id, hours=hours)
+
+@app.get("/temporal/herd/warnings")
+def herd_warnings(level: str = "WATCH"):
+    results = herd_early_warnings(HERD_IDS, min_level=level)
+    return {"min_level": level, "warnings": results, "count": len(results)}

@@ -212,3 +212,28 @@ def model_info():
         "anomaly":     "IsolationForest(n_estimators=200, contamination=0.1)",
         "classifier":  "RandomForestClassifier(n_estimators=300, max_depth=8)",
     }
+
+from app.temporal_engine import rolling_stats, risk_trend, early_warning, herd_early_warnings, cow_timeline
+
+HERD_IDS = [101, 102, 103, 104, 105]
+
+@app.get("/temporal/cow/{cow_id}/trend", tags=["temporal"])
+def cow_risk_trend(cow_id: str, hours: int = 3):
+    return risk_trend(cow_id, hours=hours)
+
+@app.get("/temporal/cow/{cow_id}/stats/{field}", tags=["temporal"])
+def cow_field_stats(cow_id: str, field: str, hours: int = 6):
+    return rolling_stats(cow_id, field, hours=hours)
+
+@app.get("/temporal/cow/{cow_id}/warning", tags=["temporal"])
+def cow_early_warning(cow_id: str):
+    return early_warning(cow_id)
+
+@app.get("/temporal/cow/{cow_id}/timeline", tags=["temporal"])
+def cow_full_timeline(cow_id: str, hours: int = 24):
+    return cow_timeline(cow_id, hours=hours)
+
+@app.get("/temporal/herd/warnings", tags=["temporal"])
+def herd_warnings(level: str = "WATCH"):
+    results = herd_early_warnings(HERD_IDS, min_level=level)
+    return {"min_level": level, "warnings": results, "count": len(results)}

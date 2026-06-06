@@ -41,19 +41,6 @@ services:
       - DOCKER_INFLUXDB_INIT_BUCKET=herd_telemetry
       - DOCKER_INFLUXDB_INIT_ADMIN_TOKEN=cfuR3oHFeBlAbbiIxas5OcXhTY3CZxkz1_QNkAlVrCu48Y6osB-loG7UcGvP1RlN1lRugY7qsAPgHZiu3JteEA==
 
-  grafana:
-    image: grafana/grafana:latest
-    container_name: herd_grafana
-    ports:
-      - "3000:3000"
-    volumes:
-      - ./infra/grafana/storage:/var/lib/grafana
-    environment:
-      - GF_SECURITY_ADMIN_USER=admin
-      - GF_SECURITY_ADMIN_PASSWORD=adminpassword123
-    depends_on:
-      - influxdb
-
   edge:
     build: ./edge
     container_name: herd_edge
@@ -63,6 +50,13 @@ services:
   ai_service:
     build: ./services/ai_service
     container_name: herd_ai_service
+    ports:
+      - "8001:8001"
+    environment:
+      - INFLUX_URL=http://herd_influx:8086
+      - INFLUX_TOKEN=cfuR3oHFeBlAbbiIxas5OcXhTY3CZxkz1_QNkAlVrCu48Y6osB-loG7UcGvP1RlN1lRugY7qsAPgHZiu3JteEA==
+      - INFLUX_ORG=herdmind
+      - INFLUX_BUCKET=herd_telemetry
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
