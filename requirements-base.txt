@@ -1,37 +1,14 @@
-# =========================
-# CORE FASTAPI STACK
-# =========================
-fastapi==0.110.0
-uvicorn[standard]==0.27.1
-
-# =========================
-# DATA & VALIDATION
-# =========================
-pydantic==2.6.4
-pydantic-settings==2.2.1
-
-# =========================
-# MQTT (EDGE → AI FLOW)
-# =========================
-paho-mqtt==1.6.1
-
-# =========================
-# REDIS (CACHE / QUEUE)
-# =========================
-redis==5.0.1
-
-# =========================
-# POSTGRES (ANALYTICS LAYER)
-# =========================
-psycopg2-binary==2.9.12
-
-# =========================
-# UTILITIES
-# =========================
-python-dotenv==1.0.1
-orjson>=3.9,<4.0
-
-# =========================
-# LOGGING (IMPORTANT FOR DEBUGGING FLOW)
-# =========================
-loguru==0.7.2
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+pydantic>=2.10.0
+pydantic-settings>=2.6.0
+paho-mqtt>=2.1.0
+redis>=5.2.0
+psycopg2-binary>=2.9.10
+python-dotenv>=1.0.1
+orjson>=3.10.0
+loguru>=0.7.2
+numpy>=2.0.0
+pandas>=2.2.0
+influxdb-client>=1.43.0
+temporalio>=1.7.0
