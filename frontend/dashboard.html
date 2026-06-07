@@ -115,9 +115,9 @@ async function table(){
   document.getElementById('herd-count').textContent=rows.length+' cows';
   let tb='<table class="cow-table"><thead><tr><th>ID</th><th>Risk</th><th>Temp</th><th>Rum</th><th>Status</th><th>Warning</th></tr></thead><tbody>';
   rows.forEach(({id,l,w})=>{
-    const r=l&&l.latest?l.latest.risk_score||0:0;
-    const t=l&&l.latest?l.latest.temperature||0:0;
-    const rum=l&&l.latest?l.latest.rumination||0:0;
+    const r=l?l.risk_score||0:0;
+    const t=l?l.temperature||0:0;
+    const rum=l?l.rumination||0:0;
     const wl=w&&w.warning_level?w.warning_level:'NORMAL';
     tb+='<tr><td style="font-family:var(--font-head);font-weight:700">COW '+id+'</td>';
     tb+='<td><span class="risk-bar"><span class="risk-fill '+rf(r)+'" style="width:'+(r*100).toFixed(0)+'%"></span></span>'+r.toFixed(3)+'</td>';
