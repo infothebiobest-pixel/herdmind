@@ -3,21 +3,20 @@ import logging
 import os
 import random
 import time
-
 import paho.mqtt.publish as publish
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)-8s  %(message)s", datefmt="%H:%M:%S")
 log = logging.getLogger(__name__)
 
-BROKER = os.environ.get("MQTT_BROKER", "mqtt")
-PORT   = int(os.environ.get("MQTT_PORT", 1883))
-TOPIC  = "herdmind/sensors"
+BROKER   = os.environ.get("MQTT_BROKER", "mqtt")
+PORT     = int(os.environ.get("MQTT_PORT", 1883))
+TOPIC    = "herd/sensors/edge"
 INTERVAL = int(os.environ.get("PUBLISH_INTERVAL", 30))
-HERD = [101, 102, 103, 104, 105]
+HERD     = [101, 102, 103, 104, 105]
 
 def make_reading(cow_id):
     return {
-        "cow_id": cow_id,
+        "cow_id":        cow_id,
         "temperature":   round(random.uniform(38.3, 39.2), 2),
         "rumination":    round(random.uniform(260, 320)),
         "activity":      round(random.uniform(55, 90)),
@@ -30,7 +29,7 @@ def make_reading(cow_id):
     }
 
 def main():
-    log.info("Edge starting — broker=%s:%d", BROKER, PORT)
+    log.info("Edge starting — broker=%s:%d  topic=%s", BROKER, PORT, TOPIC)
     tick = 0
     while True:
         for cow_id in HERD:

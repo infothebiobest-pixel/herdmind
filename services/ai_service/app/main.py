@@ -1,10 +1,12 @@
 import os
 import json
+import os
 import numpy as np
 import requests
 import asyncio
 import paho.mqtt.client as mqtt
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from contextlib import asynccontextmanager
 from typing import Optional
@@ -107,7 +109,7 @@ def on_message(client, userdata, msg):
     except Exception as e:
         print(f"💥 Ingestion processing failure: {e}")
 
-mqtt_client = mqtt.Client(client_id="herd_ai_service_client")
+mqtt_client = mqtt.Client(client_id="herd_ai_main_v2")
 mqtt_client.on_connect = on_connect
 mqtt_client.on_message = on_message
 
@@ -181,7 +183,7 @@ async def lifespan(app: FastAPI):
     print("🔄 Spawning background thread telemetry engine layers...")
     try:
         mqtt_client.connect(MQTT_BROKER, MQTT_PORT, keepalive=60)
-        mqtt_client.loop_start()  
+        mqtt_client.loop_start()
     except Exception as e:
         print(f"🚨 Background socket initialization failed to bind: {e}")
         
@@ -197,6 +199,7 @@ async def lifespan(app: FastAPI):
     close_storage()
 
 app = FastAPI(title="HerdMind AI Service (Enterprise)", lifespan=lifespan)
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 @app.get("/health", response_model=str)
 def health_check(): 
@@ -230,9 +233,6 @@ def get_cow_latest(cow_id: int):
 def get_herd_summary_endpoint(window_hours: Optional[int] = 24):
     return query_herd_summary(hours=window_hours)
 
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run("app.main:app", host="0.0.0.0", port=8001, reload=False)
 
 
 from app.temporal_engine import rolling_stats, risk_trend, early_warning, herd_early_warnings, cow_timeline
@@ -259,3 +259,17 @@ def cow_full_timeline(cow_id: str, hours: int = 24):
 def herd_warnings(level: str = "WATCH"):
     results = herd_early_warnings(HERD_IDS, min_level=level)
     return {"min_level": level, "warnings": results, "count": len(results)}
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("app.main:app", host="0.0.0.0", port=8001, reload=False)
+
+
+@app.get("/herd/at-risk")
+def get_at_risk(threshold: float = 0.8, hours: int = 24):
+    return {"threshold": threshold, "hours": hours, "count": 0, "cows": query_high_risk_cows(threshold=threshold, hours=hours)}
+
+@app.get("/herd/critical")
+def get_critical():
+    cows = query_high_risk_cows(threshold=0.9, hours=1)
+    return {"count": len(cows), "cows": cows}
