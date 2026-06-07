@@ -188,12 +188,13 @@ async def lifespan(app: FastAPI):
         print(f"🚨 Background socket initialization failed to bind: {e}")
         
     # Launch the ML Retraining background engine thread loop
-    retrain_task = asyncio.create_task(ml_retraining_worker())
+    # retrain_task = asyncio.create_task(ml_retraining_worker())  # disabled: corrupts model with healthy-only data
+    retrain_task = None
         
     yield  
     
     print("🛑 Unbinding system messaging connections...")
-    retrain_task.cancel()
+    if retrain_task: retrain_task.cancel()
     mqtt_client.loop_stop()
     mqtt_client.disconnect()
     close_storage()
@@ -227,7 +228,8 @@ def get_cow_latest(cow_id: int):
     history = query_cow_history(str(cow_id), hours=24)
     if not history: 
         raise HTTPException(status_code=404, detail="No logs found recently")
-    return history[-1]
+    latest = sorted(history, key=lambda x: x["time"], reverse=True)[0]
+    return latest
 
 @app.get("/herd/summary")
 def get_herd_summary_endpoint(window_hours: Optional[int] = 24):
