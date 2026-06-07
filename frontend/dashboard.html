@@ -159,10 +159,31 @@ async function sparklines(){
     }
   }
 }
+async function loadAlerts(){
+  try{
+    const data = await get('/alerts/recent?hours=24&limit=10');
+    const feed = document.getElementById('alert-feed');
+    const loading = feed.querySelector('.loading');
+    if(loading) loading.remove();
+    if(!data.alerts || data.alerts.length===0) return;
+    data.alerts.forEach(a=>{
+      const k = a.cow_id+'-'+a.time;
+      if(lg.includes(k)) return;
+      lg.push(k);
+      const cls = a.alert_level==='CRITICAL'?'crit':'warn';
+      const el = document.createElement('div');
+      el.className = 'alert-item '+cls;
+      const t = new Date(a.time).toLocaleTimeString();
+      el.innerHTML = '<span class="alert-time">'+t+'</span><div class="alert-cow '+cls+'">COW '+a.cow_id+' — '+a.alert_level+'</div><div class="alert-msg">Risk score: '+a.risk_score.toFixed(3)+'</div>';
+      feed.appendChild(el);
+    });
+    document.getElementById('alert-count').textContent = feed.querySelectorAll('.alert-item').length;
+  }catch(e){console.warn('alerts failed',e)}
+}
 async function refresh(){
   document.getElementById('status-text').textContent='LIVE';
   document.getElementById('last-update').textContent=new Date().toLocaleTimeString();
-  await Promise.all([kpis(),table(),sparklines()]);
+  await Promise.all([kpis(),table(),sparklines(),loadAlerts()]);
 }
 refresh();setInterval(refresh,REFRESH);
 </script>

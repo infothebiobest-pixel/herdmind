@@ -275,3 +275,33 @@ def get_at_risk(threshold: float = 0.8, hours: int = 24):
 def get_critical():
     cows = query_high_risk_cows(threshold=0.9, hours=1)
     return {"count": len(cows), "cows": cows}
+
+
+@app.get("/alerts/recent")
+def get_recent_alerts(hours: int = 24, limit: int = 20):
+    """Return recent CRITICAL and WARNING readings for the dashboard alert feed."""
+    from app.storage import _query_api, INFLUX_BUCKET
+    flux = f"""
+from(bucket: "{INFLUX_BUCKET}")
+  |> range(start: -{hours}h)
+  |> filter(fn: (r) => r._measurement == "cow_reading")
+  |> filter(fn: (r) => r._field == "risk_score")
+  |> filter(fn: (r) => r._value >= 0.8)
+  |> group()
+  |> sort(columns: ["_time"], desc: true)
+  |> limit(n: {limit})
+"""
+    try:
+        tables = _query_api.query(flux)
+        alerts = []
+        for table in tables:
+            for record in table.records:
+                alerts.append({
+                    "time":       record.get_time().isoformat(),
+                    "cow_id":     record.values.get("cow_id"),
+                    "risk_score": round(record.get_value(), 4),
+                    "alert_level": record.values.get("alert_level", "WARNING"),
+                })
+        return {"count": len(alerts), "alerts": alerts}
+    except Exception as e:
+        return {"count": 0, "alerts": [], "error": str(e)}
