@@ -168,14 +168,55 @@ async def lifespan(app: FastAPI):
     print("🧠 Bootstrapping AI Engines with synthetic matrices for startup safety...")
     try:
         np.random.seed(42)
-        base_healthy = np.random.normal(
-            loc=[38.7, 450.0, 90.0, 22.0, 5.0, 2.6, 0.4, 11.0, 72.0], 
-            scale=[0.8, 80.0, 30.0, 5.0, 2.0, 1.0, 0.3, 3.0, 12.0],
-            size=(1000, 9)
+        rng = np.random.default_rng(42)
+
+        # Healthy baseline — 700 samples
+        # [temp, rum, act, milk, cond, flow, q_delta, lying, hr]
+        healthy = rng.normal(
+            loc=[38.7, 300.0, 70.0, 22.0, 5.0, 2.5, 0.4, 12.0, 70.0],
+            scale=[0.2, 20.0, 8.0, 2.0, 0.3, 0.2, 0.1, 0.8, 4.0],
+            size=(700, 9)
         )
-        ai_engine.train(base_healthy)
-        labels = np.zeros(1000, dtype=int)
-        disease_classifier.train(base_healthy, labels)
+
+        # Mastitis — 100 samples: high temp, high conductivity, low flow
+        mastitis = rng.normal(
+            loc=[39.8, 240.0, 50.0, 14.0, 9.5, 1.4, 4.2, 10.0, 90.0],
+            scale=[0.3, 25.0, 10.0, 3.0, 1.0, 0.3, 0.8, 1.0, 6.0],
+            size=(100, 9)
+        )
+
+        # Ketosis — 100 samples: low temp, severe rumination drop, high lying
+        ketosis = rng.normal(
+            loc=[38.1, 160.0, 25.0, 11.0, 5.1, 2.4, 0.5, 17.0, 65.0],
+            scale=[0.2, 20.0, 8.0, 2.0, 0.3, 0.2, 0.1, 1.0, 4.0],
+            size=(100, 9)
+        )
+
+        # Lameness — 60 samples: low activity, high lying
+        lameness = rng.normal(
+            loc=[38.6, 210.0, 22.0, 16.0, 5.2, 2.3, 0.4, 15.0, 78.0],
+            scale=[0.2, 25.0, 8.0, 2.0, 0.3, 0.2, 0.1, 1.2, 5.0],
+            size=(60, 9)
+        )
+
+        # Noise — 40 samples: extreme outliers
+        noise = rng.normal(
+            loc=[42.0, 580.0, 260.0, 5.0, 5.0, 2.5, 0.4, 12.0, 70.0],
+            scale=[0.5, 10.0, 15.0, 1.0, 0.2, 0.1, 0.1, 0.5, 3.0],
+            size=(40, 9)
+        )
+
+        # Combined training set — 1000 samples, 30% disease
+        base_all = np.vstack([healthy, mastitis, ketosis, lameness, noise])
+        labels = np.array(
+            [0]*700 + [1]*100 + [2]*100 + [3]*60 + [4]*40
+        )
+
+        # Train anomaly engine on healthy only — learns normal boundary
+        ai_engine.train(healthy)
+
+        # Train disease classifier on full mixed set
+        disease_classifier.train(base_all, labels)
         print("✅ Core baseline models initialized completely!")
     except Exception as ex:
         print(f"🚨 Initialization of baseline failed: {ex}")
