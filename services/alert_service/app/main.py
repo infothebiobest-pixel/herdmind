@@ -1,185 +1,112 @@
-"""
-HerdMind-X · Alert Service
-Owns notification routing — decoupled from Twilio and delivery channels.
-ai_service calls this endpoint; this service decides how and where to send.
-"""
-
-import logging
-import os
+"""HerdMind-X Alert Service v2 — Tiered routing"""
+import logging, os
 from datetime import datetime, timezone
-
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s  %(levelname)-8s  %(message)s",
-    datefmt="%H:%M:%S",
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
 
-app = FastAPI(
-    title       = "HerdMind-X · Alert Service",
-    description = "Notification routing — WhatsApp, SMS, email, webhook.",
-    version     = "1.0.0",
-)
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# ---------------------------------------------------------------------------
-# Config
-# ---------------------------------------------------------------------------
+app = FastAPI(title="HerdMind-X Alert Service v2", version="2.0.0")
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID", "")
 TWILIO_AUTH_TOKEN  = os.environ.get("TWILIO_AUTH_TOKEN", "")
-TWILIO_FROM        = os.environ.get("TWILIO_WHATSAPP_FROM", "whatsapp:+14155238886")
-RECIPIENTS         = os.environ.get("HERDMIND_ALERT_RECIPIENTS", "").split(",")
+TWILIO_FROM_WA     = os.environ.get("TWILIO_WHATSAPP_FROM", "whatsapp:+14155238886")
+TWILIO_FROM_SMS    = os.environ.get("TWILIO_SMS_FROM", "")
+RECIPIENTS_WA      = [r.strip() for r in os.environ.get("HERDMIND_ALERT_RECIPIENTS","").split(",") if r.strip()]
+RECIPIENTS_SMS     = [r.strip() for r in os.environ.get("HERDMIND_SMS_RECIPIENTS","").split(",") if r.strip()]
 
-NOTIFY_ON_LEVELS   = {"CRITICAL", "WARNING"}
-
-# ---------------------------------------------------------------------------
-# Twilio client
-# ---------------------------------------------------------------------------
+TIERS = {"CRITICAL": 0.95, "WARNING": 0.80, "WATCH": 0.60}
 
 _twilio = None
-
 def _get_twilio():
     global _twilio
-    if _twilio:
-        return _twilio
-    if not TWILIO_ACCOUNT_SID or not TWILIO_AUTH_TOKEN:
-        return None
+    if _twilio: return _twilio
+    if not TWILIO_ACCOUNT_SID or not TWILIO_AUTH_TOKEN: return None
     from twilio.rest import Client
     _twilio = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
     return _twilio
 
-# ---------------------------------------------------------------------------
-# Schemas
-# ---------------------------------------------------------------------------
-
 class AlertRequest(BaseModel):
-    cow_id:      str
+    cow_id: str
     alert_level: str
-    disease:     str
-    risk_score:  float
-    temperature: float
-    rumination:  float
-    activity:    float
-    message:     str = ""
-    action:      str = ""
+    disease: str = "unknown"
+    risk_score: float
+    temperature: float = 0.0
+    rumination: float = 0.0
+    activity: float = 0.0
+    message: str = ""
+    action: str = ""
 
 class AlertResponse(BaseModel):
-    sent:      bool
-    channels:  list[str]
-    cow_id:    str
+    sent: bool
+    tier: str
+    channels: list[str]
+    cow_id: str
     timestamp: str
-    reason:    str = ""
+    reason: str = ""
 
-# ---------------------------------------------------------------------------
-# Message builder
-# ---------------------------------------------------------------------------
+def _get_tier(risk: float, level: str) -> str:
+    if risk >= TIERS["CRITICAL"] or level == "CRITICAL": return "CRITICAL"
+    if risk >= TIERS["WARNING"]  or level == "WARNING":  return "WARNING"
+    if risk >= TIERS["WATCH"]:                           return "WATCH"
+    return "NONE"
 
-def _build_message(req: AlertRequest) -> str:
-    emoji = "🔴" if req.alert_level == "CRITICAL" else "🟡"
-    ts    = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-    return (
-        f"{emoji} *HerdMind-X — {req.alert_level}*\n"
-        f"──────────────────────\n"
-        f"🐄 Cow ID:     {req.cow_id}\n"
-        f"🦠 Disease:    {req.disease.upper()}\n"
-        f"🌡️  Temp:       {req.temperature:.1f}°C\n"
-        f"💭 Rumination: {req.rumination:.0f} min/day\n"
-        f"⚡ Activity:   {req.activity:.0f} units\n"
-        f"📊 Risk Score: {req.risk_score:.2f} / 1.00\n"
-        f"──────────────────────\n"
-        f"⚠️  {req.message}\n"
-        f"✅ {req.action}\n"
-        f"🕐 {ts}"
-    )
+def _wa_msg(req, tier):
+    emoji = "🔴" if tier == "CRITICAL" else "🟡"
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    return f"{emoji} HerdMind-X {tier}\nCow:{req.cow_id} Disease:{req.disease.upper()}\nTemp:{req.temperature:.1f}C Rum:{req.rumination:.0f} Act:{req.activity:.0f}\nRisk:{req.risk_score:.3f}\n{req.message}\n{req.action}\n{ts}"
 
-# ---------------------------------------------------------------------------
-# Routes
-# ---------------------------------------------------------------------------
+def _sms_msg(req):
+    return f"HERDMIND CRITICAL: Cow {req.cow_id} Risk {req.risk_score:.2f} Temp {req.temperature:.1f}C Disease:{req.disease.upper()} ACTION REQUIRED"
 
-@app.get("/health", tags=["system"])
-def health():
-    twilio_ready = bool(TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN)
-    return {
-        "service":      "alert_service",
-        "status":       "ok",
-        "twilio_ready": twilio_ready,
-        "recipients":   len([r for r in RECIPIENTS if r.strip()]),
-    }
-
-
-@app.post("/notify", response_model=AlertResponse, tags=["alerts"])
-def notify(req: AlertRequest):
-    """
-    Route alert to configured channels.
-    Currently: WhatsApp via Twilio.
-    Extensible: add SMS, email, webhook blocks below.
-    """
-    ts = datetime.now(timezone.utc).isoformat()
-
-    if req.alert_level not in NOTIFY_ON_LEVELS:
-        log.debug("Skipping notification for level=%s cow_id=%s",
-                  req.alert_level, req.cow_id)
-        return AlertResponse(
-            sent=False, channels=[], cow_id=req.cow_id,
-            timestamp=ts, reason=f"level {req.alert_level} below notify threshold"
-        )
-
-    client   = _get_twilio()
-    channels = []
-
-    if not client:
-        log.warning("Twilio not configured — alert not sent. cow_id=%s", req.cow_id)
-        return AlertResponse(
-            sent=False, channels=[], cow_id=req.cow_id,
-            timestamp=ts, reason="Twilio credentials not set"
-        )
-
-    body       = _build_message(req)
-    recipients = [r.strip() for r in RECIPIENTS if r.strip()]
-
-    for number in recipients:
-        to = f"whatsapp:{number}" if not number.startswith("whatsapp:") else number
+def _send_wa(client, recipients, body, cow_id):
+    sent = []
+    for n in recipients:
+        to = f"whatsapp:{n}" if not n.startswith("whatsapp:") else n
         try:
-            msg = client.messages.create(from_=TWILIO_FROM, to=to, body=body)
-            log.info("WhatsApp sent → %s  sid=%s  cow_id=%s",
-                     number, msg.sid, req.cow_id)
-            channels.append(f"whatsapp:{number}")
-        except Exception as exc:
-            log.error("WhatsApp failed → %s: %s", number, exc)
+            msg = client.messages.create(from_=TWILIO_FROM_WA, to=to, body=body)
+            log.info("WA sent cow=%s sid=%s", cow_id, msg.sid)
+            sent.append(f"whatsapp:{n}")
+        except Exception as e:
+            log.error("WA failed: %s", e)
+    return sent
 
-    return AlertResponse(
-        sent      = len(channels) > 0,
-        channels  = channels,
-        cow_id    = req.cow_id,
-        timestamp = ts,
-    )
+def _send_sms(client, recipients, body, cow_id):
+    if not TWILIO_FROM_SMS: return []
+    sent = []
+    for n in recipients:
+        try:
+            msg = client.messages.create(from_=TWILIO_FROM_SMS, to=n, body=body)
+            log.info("SMS sent cow=%s sid=%s", cow_id, msg.sid)
+            sent.append(f"sms:{n}")
+        except Exception as e:
+            log.error("SMS failed: %s", e)
+    return sent
 
+@app.get("/health")
+def health():
+    return {"service":"alert_service","status":"ok","version":"2.0.0","twilio_ready":bool(TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN),"wa_recipients":len(RECIPIENTS_WA),"sms_recipients":len(RECIPIENTS_SMS),"tiers":TIERS}
 
-@app.get("/config", tags=["config"])
+@app.post("/notify", response_model=AlertResponse)
+def notify(req: AlertRequest):
+    ts   = datetime.now(timezone.utc).isoformat()
+    tier = _get_tier(req.risk_score, req.alert_level)
+    log.info("cow=%s risk=%.3f tier=%s", req.cow_id, req.risk_score, tier)
+    if tier in ("NONE","WATCH"):
+        return AlertResponse(sent=False, tier=tier, channels=[], cow_id=req.cow_id, timestamp=ts, reason=f"tier={tier}")
+    client = _get_twilio()
+    if not client:
+        return AlertResponse(sent=False, tier=tier, channels=[], cow_id=req.cow_id, timestamp=ts, reason="Twilio not configured")
+    channels = []
+    if tier in ("WARNING","CRITICAL"):
+        channels += _send_wa(client, RECIPIENTS_WA, _wa_msg(req, tier), req.cow_id)
+    if tier == "CRITICAL":
+        channels += _send_sms(client, RECIPIENTS_SMS, _sms_msg(req), req.cow_id)
+    return AlertResponse(sent=len(channels)>0, tier=tier, channels=channels, cow_id=req.cow_id, timestamp=ts)
+
+@app.get("/config")
 def config():
-    """Return notification configuration (no secrets)."""
-    return {
-        "notify_on_levels": list(NOTIFY_ON_LEVELS),
-        "recipient_count":  len([r for r in RECIPIENTS if r.strip()]),
-        "twilio_configured": bool(TWILIO_ACCOUNT_SID),
-        "channels_available": ["whatsapp"],
-    }
-
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8002, reload=False)
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8002, reload=False)
+    return {"tiers":TIERS,"wa_recipients":len(RECIPIENTS_WA),"sms_recipients":len(RECIPIENTS_SMS),"twilio_configured":bool(TWILIO_ACCOUNT_SID),"channels":["whatsapp","sms"]}

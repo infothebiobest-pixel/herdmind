@@ -50,6 +50,7 @@ services:
   ai_service:
     build: ./services/ai_service
     container_name: herd_ai_service
+    init: true
     ports:
       - "8001:8001"
     environment:
@@ -74,6 +75,10 @@ services:
   alert_service:
     build: ./services/alert_service
     container_name: herd_alert_service
+    init: true
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    ports:
+      - "8002:8000"
     depends_on:
       - mqtt
 
