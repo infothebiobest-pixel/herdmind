@@ -3,18 +3,16 @@ services:
     image: eclipse-mosquitto
     container_name: herd_mqtt
     ports:
-      - "1883:1883"
+    - 1883:1883
     volumes:
-      - ./infra/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
-      - ./infra/mosquitto/data:/mosquitto/data
-      - ./infra/mosquitto/log:/mosquitto/log
-
+    - ./infra/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+    - ./infra/mosquitto/data:/mosquitto/data
+    - ./infra/mosquitto/log:/mosquitto/log
   redis:
     image: redis:7
     container_name: herd_redis
     ports:
-      - "6379:6379"
-
+    - 6379:6379
   postgres:
     image: postgres:16
     container_name: herd_postgres
@@ -23,70 +21,71 @@ services:
       POSTGRES_PASSWORD: herd123
       POSTGRES_DB: herdmind
     ports:
-      - "5432:5432"
-
+    - 5432:5432
   influxdb:
     image: influxdb:2.7
     container_name: herd_influx
     ports:
-      - "8086:8086"
+    - 8086:8086
     volumes:
-      - ./infra/influxdb/data:/var/lib/influxdb2
-      - ./infra/influxdb/config:/etc/influxdb2
+    - ./infra/influxdb/data:/var/lib/influxdb2
+    - ./infra/influxdb/config:/etc/influxdb2
     environment:
-      - DOCKER_INFLUXDB_INIT_MODE=setup
-      - DOCKER_INFLUXDB_INIT_USERNAME=herdmind
-      - DOCKER_INFLUXDB_INIT_PASSWORD=herdmindpassword123
-      - DOCKER_INFLUXDB_INIT_ORG=herdmind
-      - DOCKER_INFLUXDB_INIT_BUCKET=herd_telemetry
-      - DOCKER_INFLUXDB_INIT_ADMIN_TOKEN=cfuR3oHFeBlAbbiIxas5OcXhTY3CZxkz1_QNkAlVrCu48Y6osB-loG7UcGvP1RlN1lRugY7qsAPgHZiu3JteEA==
-
+    - DOCKER_INFLUXDB_INIT_MODE=setup
+    - DOCKER_INFLUXDB_INIT_USERNAME=herdmind
+    - DOCKER_INFLUXDB_INIT_PASSWORD=herdmindpassword123
+    - DOCKER_INFLUXDB_INIT_ORG=herdmind
+    - DOCKER_INFLUXDB_INIT_BUCKET=herd_telemetry
+    - DOCKER_INFLUXDB_INIT_ADMIN_TOKEN=cfuR3oHFeBlAbbiIxas5OcXhTY3CZxkz1_QNkAlVrCu48Y6osB-loG7UcGvP1RlN1lRugY7qsAPgHZiu3JteEA==
   edge:
     build: ./edge
     container_name: herd_edge
     depends_on:
-      - mqtt
-
+    - mqtt
   ai_service:
     build: ./services/ai_service
     container_name: herd_ai_service
     init: true
+    restart: on-failure
     ports:
-      - "8001:8001"
+    - 8001:8001
     environment:
-      - INFLUX_URL=http://herd_influx:8086
-      - INFLUX_TOKEN=cfuR3oHFeBlAbbiIxas5OcXhTY3CZxkz1_QNkAlVrCu48Y6osB-loG7UcGvP1RlN1lRugY7qsAPgHZiu3JteEA==
-      - INFLUX_ORG=herdmind
-      - INFLUX_BUCKET=herd_telemetry
+    - PYTHONUNBUFFERED=1
+    - PYTHONPATH=/app
+    - INFLUX_URL=http://herd_influx:8086
+    - INFLUX_TOKEN=cfuR3oHFeBlAbbiIxas5OcXhTY3CZxkz1_QNkAlVrCu48Y6osB-loG7UcGvP1RlN1lRugY7qsAPgHZiu3JteEA==
+    - INFLUX_ORG=herdmind
+    - INFLUX_BUCKET=herd_telemetry
+    - ALERT_SERVICE_URL=http://alert_service:8000/notify
     extra_hosts:
-      - "host.docker.internal:host-gateway"
+    - host.docker.internal:host-gateway
     depends_on:
-      - mqtt
-      - postgres
-      - influxdb
-
+    - mqtt
+    - postgres
+    - influxdb
   risk_service:
     build: ./services/risk_service
     container_name: herd_risk_service
     depends_on:
-      - mqtt
-      - postgres
-
+    - mqtt
+    - postgres
   alert_service:
     build: ./services/alert_service
     container_name: herd_alert_service
     init: true
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    restart: on-failure
     ports:
-      - "8002:8000"
+    - 8002:8000
+    environment:
+    - PYTHONUNBUFFERED=1
+    - TWILIO_WHATSAPP_FROM=whatsapp:+14155238886
+    - TWILIO_SMS_FROM=+14155238886
+    - HERDMIND_ALERT_RECIPIENTS=+923001234567
+    - HERDMIND_SMS_RECIPIENTS=+923001234567
+    - TWILIO_ACCOUNT_SID=
+    - TWILIO_AUTH_TOKEN=
+    volumes:
+    - ./services/alert_service/app:/app/app
     depends_on:
-      - mqtt
-
-  gateway:
-    build: ./services/gateway_service
-    container_name: herd_gateway
-    ports:
-      - "8000:8000"
-    depends_on:
-      - mqtt
-      - redis
+    - mqtt
+    - redis
