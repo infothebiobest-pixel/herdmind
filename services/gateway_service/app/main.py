@@ -93,7 +93,7 @@ async def login_farmer_account(user: UserAuthSchema):
     token = jwt.encode(payload, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
     return {"access_token": token, "token_type": "bearer", "farmer": verified_profile["username"]}
 
-# SECURED ROUTE: Validates authentication token before proxying
+# SECURED ROUTE: Validates authentication token + checks RBAC roles before proxying
 @app.api_route("/ai/{path:path}", methods=["GET", "POST", "PUT", "DELETE"])
 async def route_to_ai(path: str, request: Request):
     auth_header = request.headers.get("Authorization")
@@ -111,10 +111,19 @@ async def route_to_ai(path: str, request: Request):
     try:
         payload = jwt.decode(token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])
         request.state.user = payload.get("sub")
+        request.state.role = payload.get("role", "guest")
     except jwt.ExpiredSignatureError:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication token has expired.")
     except jwt.InvalidTokenError:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid cryptographic signature credentials.")
+
+    # Explicit RBAC Privilege Verification Check
+    allowed_roles = ["administrator", "farm_manager", "vet"]
+    if request.state.role not in allowed_roles:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Access denied. Role '{request.state.role}' has insufficient security privileges."
+        )
 
     return await reverse_proxy_handler(AI_SERVICE_URL, path, request)
 
@@ -126,7 +135,4 @@ def gateway_health():
 def generate_dev_token(farmer_id: str = "farmer_001"):
     payload = {"sub": farmer_id, "exp": time.time() + 3600, "role": "administrator"}
     token = jwt.encode(payload, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
-    return {"access_token": token, "token_type": "bearer"}
-
-
-
+    return {"dev_access_token": token, "token_type": "bearer"}
