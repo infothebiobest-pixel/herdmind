@@ -167,13 +167,17 @@ class HerdAnomalyEngine:
             n_estimators=200,
         )
         self._trained = False
+        self._score_scale = 1.0
 
     def train(self, X: np.ndarray) -> None:
         assert X.shape[1] == 9, f"Expected 9 features, got {X.shape[1]}"
         Xs = self.scaler.fit_transform(X)
         self.model.fit(Xs)
         self._trained = True
-        log.info("HerdAnomalyEngine trained on %d samples × 9 features.", len(X))
+        # Store reference scale from training data decision scores
+        train_scores = self.model.decision_function(Xs)
+        self._score_scale = float(np.abs(train_scores).max())
+        log.info("HerdAnomalyEngine trained on %d samples × 9 features. scale=%.4f", len(X), self._score_scale)
 
     def predict(self, X: np.ndarray) -> np.ndarray:
         """Returns array of 1 (normal) or -1 (anomaly)."""
@@ -184,7 +188,8 @@ class HerdAnomalyEngine:
         """Returns risk in [0, 1]. Higher = more anomalous."""
         self._check_trained()
         raw = self.model.decision_function(self.scaler.transform(X))
-        return np.clip(-raw / (np.abs(raw).max() + 1e-9), 0, 1)
+        # Normalize against training reference range, not current batch
+        return np.clip(-raw / (self._score_scale + 1e-9), 0, 1)
 
     def _check_trained(self) -> None:
         if not self._trained:
@@ -211,6 +216,7 @@ class DiseaseClassifier:
             class_weight="balanced",
         )
         self._trained = False
+        self._score_scale = 1.0
 
     def train(self, X: np.ndarray, y: np.ndarray) -> None:
         """

@@ -18,11 +18,9 @@ from app.storage import (
     query_herd_summary,
     query_high_risk_cows,
     close as close_storage,
-    _query_api,
-    INFLUX_BUCKET,
 )
+
 from app.temporal_engine import (
-    rolling_stats,
     risk_trend,
     early_warning,
     herd_early_warnings,
@@ -30,49 +28,30 @@ from app.temporal_engine import (
 )
 
 # =========================
-# ENV CONFIG
+# CONFIG
 # =========================
 MQTT_BROKER = os.getenv("MQTT_BROKER", "mqtt")
 MQTT_PORT = int(os.getenv("MQTT_PORT", 1883))
 MQTT_TOPIC = "herd/sensors/#"
 ALERT_URL = os.getenv("ALERT_SERVICE_URL", "http://herd_alert_service:8000/notify")
 
-# =========================
-# MODEL STATE CONTROL
-# =========================
-MODEL_READY = False
-MODEL_LOCK = False
+HERD_IDS = [101, 102, 103, 104, 105]
 
-# =========================
-# RISK STABILIZATION LAYER
-# =========================
-RISK_MEMORY = {}
-ALERT_COOLDOWN = {}
-
-ALPHA = 0.25
+RISK_THRESHOLD = 0.80
+CRITICAL_THRESHOLD = 0.90
 COOLDOWN_SEC = 300
 
-
-def ema_risk(cow_id: str, raw: float) -> float:
-    """Exponential Moving Average smoothing for stable risk output."""
-    if cow_id not in RISK_MEMORY:
-        RISK_MEMORY[cow_id] = raw
-        return raw
-
-    smoothed = (ALPHA * raw) + ((1 - ALPHA) * RISK_MEMORY[cow_id])
-    RISK_MEMORY[cow_id] = smoothed
-    return smoothed
-
-
 # =========================
-# MODELS
+# STATE
 # =========================
+ALERT_COOLDOWN = {}
+
 ai_engine = HerdAnomalyEngine()
 disease_classifier = DiseaseClassifier()
 
-HERD_IDS = [101, 102, 103, 104, 105]
-
-
+# =========================
+# DATA MODEL
+# =========================
 class SensorPayload(BaseModel):
     cow_id: int
     temperature: float
@@ -87,14 +66,30 @@ class SensorPayload(BaseModel):
 
 
 # =========================
-# ALERT SYSTEM
+# RISK TRANSFORM (SAFE)
 # =========================
-def dispatch(payload, risk, level):
+def normalize_risk(raw: float) -> float:
+    """
+    Stable bounded mapping WITHOUT hard clipping collapse.
+    """
+    if np.isnan(raw) or np.isinf(raw):
+        return 0.0
+
+    # soft compression instead of clamp
+    r = np.tanh(raw)
+
+    # map from [-1,1] -> [0,1]
+    return float((r + 1.0) / 2.0)
+
+
+# =========================
+# ALERT ENGINE
+# =========================
+def send_alert(payload, risk: float, level: str):
     body = {
         "cow_id": str(payload.cow_id),
         "alert_level": level,
-        "disease": "unknown",
-        "risk_score": float(risk),
+        "risk_score": risk,
         "temperature": payload.temperature,
         "rumination": payload.rumination,
         "activity": payload.activity,
@@ -102,19 +97,15 @@ def dispatch(payload, risk, level):
         "action": "Inspect immediately",
     }
 
-    for i in range(3):
-        try:
-            r = requests.post(ALERT_URL, json=body, timeout=3)
-            print(f"🚨 Alert cow={payload.cow_id} level={level} status={r.status_code}")
-            return
-        except Exception as e:
-            wait = 2 ** i
-            print(f"💥 Alert retry {i+1}/3 error={e} wait={wait}s")
-            time.sleep(wait)
+    try:
+        r = requests.post(ALERT_URL, json=body, timeout=3)
+        print(f"🚨 ALERT cow={payload.cow_id} level={level} status={r.status_code}")
+    except Exception as e:
+        print(f"⚠ ALERT FAILED: {e}")
 
 
 # =========================
-# MQTT HANDLERS
+# MQTT CALLBACKS
 # =========================
 def on_connect(client, userdata, flags, rc):
     print(f"✅ MQTT connected rc={rc}")
@@ -122,13 +113,7 @@ def on_connect(client, userdata, flags, rc):
 
 
 def on_message(client, userdata, msg):
-    global MODEL_READY, MODEL_LOCK
-
     try:
-        if not MODEL_READY or MODEL_LOCK:
-            print("⏳ Model not ready — skipping inference")
-            return
-
         data = json.loads(msg.payload.decode())
         p = SensorPayload(**data)
 
@@ -141,31 +126,28 @@ def on_message(client, userdata, msg):
             p.flow_rate,
             p.quarter_delta,
             p.lying_time,
-            p.heart_rate,
+            p.heart_rate
         ]])
 
-        cow_id = str(p.cow_id)
-
+        # NO NORMALIZATION (critical fix)
         pred = int(ai_engine.predict(X)[0])
         raw_risk = float(ai_engine.risk_score(X)[0])
-        risk = ema_risk(cow_id, raw_risk)
+
+        risk = normalize_risk(raw_risk)
+        cow_id = str(p.cow_id)
 
         now = time.time()
         last = ALERT_COOLDOWN.get(cow_id, 0)
 
         alert = None
 
-        if pred == -1 and risk >= 0.80:
-            level = "CRITICAL" if risk >= 0.85 else "WARNING"
+        if pred == -1 and risk >= RISK_THRESHOLD:
+            level = "CRITICAL" if risk >= CRITICAL_THRESHOLD else "WARNING"
 
             if now - last > COOLDOWN_SEC:
-                dispatch(p, risk, level)
+                send_alert(p, risk, level)
                 ALERT_COOLDOWN[cow_id] = now
-
-                alert = {
-                    "alert_level": level,
-                    "message": f"Risk:{risk:.2f}",
-                }
+                alert = {"level": level, "risk": risk}
 
         write_reading(
             cow_id=p.cow_id,
@@ -180,66 +162,57 @@ def on_message(client, userdata, msg):
         print(f"💾 cow={p.cow_id} pred={pred} risk={risk:.3f}")
 
     except Exception as e:
-        print(f"💥 MQTT handler error: {e}")
+        print(f"💥 MQTT ERROR: {e}")
 
 
-mqtt_client = mqtt.Client(client_id="herd_ai_v3")
+mqtt_client = mqtt.Client(client_id="herdmind_clean_v1")
 mqtt_client.on_connect = on_connect
 mqtt_client.on_message = on_message
 
 
 # =========================
-# FASTAPI LIFESPAN
+# LIFESPAN
 # =========================
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global MODEL_READY, MODEL_LOCK
+    print("🧠 Booting CLEAN AI service...")
 
-    print("🧠 Booting AI service...")
+    try:
+        rng = np.random.default_rng(42)
 
-    MODEL_LOCK = True
+        healthy = rng.normal(
+            [38.7,300,70,22,5,2.5,0.4,12,70],
+            [0.2,20,8,2,0.3,0.2,0.1,0.8,4],
+            (600,9)
+        )
 
-    rng = np.random.default_rng(42)
+        sick = rng.normal(
+            [40.0,200,40,10,8,1.5,3.0,10,90],
+            [0.4,30,10,3,1,0.3,1.0,1.2,6],
+            (600,9)
+        )
 
-    healthy = rng.normal(
-        [38.7, 300, 70, 22, 5, 2.5, 0.4, 12, 70],
-        [0.2, 20, 8, 2, 0.3, 0.2, 0.1, 0.8, 4],
-        (700, 9),
-    )
+        X = np.vstack([healthy, sick])
 
-    mastitis = rng.normal(
-        [39.8, 240, 50, 14, 9.5, 1.4, 4.2, 10, 90],
-        [0.3, 25, 10, 3, 1, 0.3, 0.8, 1, 6],
-        (100, 9),
-    )
+        y = np.array([0]*600 + [1]*600)
 
-    ketosis = rng.normal(
-        [38.1, 160, 25, 11, 5.1, 2.4, 0.5, 17, 65],
-        [0.2, 20, 8, 2, 0.3, 0.2, 0.1, 1, 4],
-        (100, 9),
-    )
+        ai_engine.train(X)
+        disease_classifier.train(X, y)
 
-    base = np.vstack([healthy, mastitis, ketosis])
-    labels = np.array([0] * 700 + [1] * 100 + [2] * 100)
+        print("✅ Models trained (balanced)")
 
-    ai_engine.train(healthy)
-    disease_classifier.train(base, labels)
-
-    MODEL_READY = True
-    MODEL_LOCK = False
-
-    print("✅ Models trained and ready")
+    except Exception as e:
+        print(f"🚨 TRAIN ERROR: {e}")
 
     try:
         mqtt_client.connect(MQTT_BROKER, MQTT_PORT, 60)
         mqtt_client.loop_start()
         print("✅ MQTT started")
     except Exception as e:
-        print(f"🚨 MQTT connection failed: {e}")
+        print(f"🚨 MQTT ERROR: {e}")
 
     yield
 
-    print("🧹 Shutting down...")
     mqtt_client.loop_stop()
     mqtt_client.disconnect()
     close_storage()
@@ -248,7 +221,7 @@ async def lifespan(app: FastAPI):
 # =========================
 # FASTAPI APP
 # =========================
-app = FastAPI(title="HerdMind AI", version="2.1", lifespan=lifespan)
+app = FastAPI(title="HerdMind AI CLEAN", version="4.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -263,63 +236,31 @@ def health():
     return {"status": "healthy"}
 
 
-@app.get("/herd/at-risk")
-def at_risk(threshold: float = 0.8, hours: int = 24):
-    c = query_high_risk_cows(threshold=threshold, hours=hours)
-    return {"count": len(c), "cows": c}
-
-
-@app.get("/herd/critical")
-def critical():
-    c = query_high_risk_cows(threshold=0.9, hours=1)
-    return {"count": len(c), "cows": c}
-
-
-@app.get("/cows/{cow_id}/history")
-def history(cow_id: int, hours: Optional[int] = 24):
-    return query_cow_history(str(cow_id), hours=hours)
-
-
 @app.get("/herd/summary")
 def summary(window_hours: Optional[int] = 24):
     return query_herd_summary(hours=window_hours)
 
 
-@app.get("/alerts/recent")
-def alerts(hours: int = 24, limit: int = 20):
-    flux = (
-        f'from(bucket:"{INFLUX_BUCKET}")'
-        f"|>range(start:-{hours}h)"
-        '|>filter(fn:(r)=>r._measurement=="cow_reading")'
-        '|>filter(fn:(r)=>r._field=="risk_score")'
-        "|>filter(fn:(r)=>r._value>=0.8)"
-        "|>sort(columns:[\"_time\"],desc:true)"
-        f"|>limit(n:{limit})"
-    )
+@app.get("/herd/at-risk")
+def at_risk(threshold: float = 0.8, hours: int = 24):
+    cows = query_high_risk_cows(threshold=threshold, hours=hours)
+    return {"count": len(cows), "cows": cows}
 
-    try:
-        tables = _query_api.query(flux)
-        alerts = []
-        for t in tables:
-            for r in t.records:
-                alerts.append({
-                    "time": r.get_time().isoformat(),
-                    "cow_id": r.values.get("cow_id"),
-                    "risk_score": round(r.get_value(), 4),
-                })
-        return {"count": len(alerts), "alerts": alerts}
-    except Exception as e:
-        return {"count": 0, "alerts": [], "error": str(e)}
+
+@app.get("/herd/critical")
+def critical():
+    cows = query_high_risk_cows(threshold=0.9, hours=1)
+    return {"count": len(cows), "cows": cows}
+
+
+@app.get("/cows/{cow_id}/history")
+def history(cow_id: int, hours: int = 24):
+    return query_cow_history(str(cow_id), hours=hours)
 
 
 @app.get("/temporal/cow/{cow_id}/trend")
 def trend(cow_id: str, hours: int = 3):
     return risk_trend(cow_id, hours=hours)
-
-
-@app.get("/temporal/cow/{cow_id}/stats/{field}")
-def stats(cow_id: str, field: str, hours: int = 6):
-    return rolling_stats(cow_id, field, hours=hours)
 
 
 @app.get("/temporal/cow/{cow_id}/warning")
@@ -334,5 +275,4 @@ def timeline(cow_id: str, hours: int = 24):
 
 @app.get("/temporal/herd/warnings")
 def herd_warn(level: str = "WATCH"):
-    r = herd_early_warnings(HERD_IDS, min_level=level)
-    return {"count": len(r), "warnings": r}
+    return herd_early_warnings(HERD_IDS, min_level=level)
