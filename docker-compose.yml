@@ -1,32 +1,10 @@
-
 x-logging: &default-logging
-  driver: json-file
+  driver: "json-file"
   options:
     max-size: "10m"
     max-file: "3"
 
 services:
-
-  mqtt:
-    image: eclipse-mosquitto
-    container_name: herd_mqtt
-    ports:
-      - "1883:1883"
-    volumes:
-      - ./infra/mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
-      - ./infra/mosquitto/data:/mosquitto/data
-      - ./infra/mosquitto/log:/mosquitto/log
-    logging: *default-logging
-    restart: unless-stopped
-
-  redis:
-    image: redis:7
-    container_name: herd_redis
-    ports:
-      - "6379:6379"
-    logging: *default-logging
-    restart: unless-stopped
-
   postgres:
     image: postgres:16
     container_name: herd_postgres
@@ -36,6 +14,11 @@ services:
       POSTGRES_DB: herdmind
     ports:
       - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U herd -d herdmind"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
     logging: *default-logging
     restart: unless-stopped
 
@@ -47,13 +30,26 @@ services:
     volumes:
       - ./infra/influxdb/data:/var/lib/influxdb2
       - ./infra/influxdb/config:/etc/influxdb2
-    environment:
-      DOCKER_INFLUXDB_INIT_MODE: setup
-      DOCKER_INFLUXDB_INIT_USERNAME: herdmind
-      DOCKER_INFLUXDB_INIT_PASSWORD: herdmindpassword123
-      DOCKER_INFLUXDB_INIT_ORG: herdmind
-      DOCKER_INFLUXDB_INIT_BUCKET: herd_telemetry
-      DOCKER_INFLUXDB_INIT_ADMIN_TOKEN: cfuR3oHFeBlAbbiIxas5OcXhTY3CZxkz1_QNkAlVrCu48Y6osB-loG7UcGvP1RlN1lRugY7qsAPgHZiu3JteEA==
+    logging: *default-logging
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: herd_redis
+    ports:
+      - "6379:6379"
+    logging: *default-logging
+    restart: unless-stopped
+
+  mqtt:
+    image: eclipse-mosquitto:2
+    container_name: herd_mosquitto
+    hostname: mqtt
+    ports:
+      - "1883:1883"
+      - "9001:9001"
+    volumes:
+      - ./infra/mosquitto/config/mosquitto.conf:/mosquitto/config/mosquitto.conf
     logging: *default-logging
     restart: unless-stopped
 
@@ -75,19 +71,14 @@ services:
     environment:
       PYTHONUNBUFFERED: "1"
       PYTHONPATH: "/app"
-      INFLUX_URL: "http://herd_influx:8086"
+      INFLUX_URL: "http://influxdb:8086"
       INFLUX_TOKEN: "cfuR3oHFeBlAbbiIxas5OcXhTY3CZxkz1_QNkAlVrCu48Y6osB-loG7UcGvP1RlN1lRugY7qsAPgHZiu3JteEA=="
       INFLUX_ORG: "herdmind"
       INFLUX_BUCKET: "herd_telemetry"
-      # Crucial Correction: Points to the internal docker network service name instead of the container name
-      ALERT_SERVICE_URL: "http://alert_service:8000/notify"
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+      MQTT_BROKER: mqtt
+      MQTT_PORT: 1883
     depends_on:
-      - mqtt
-      - postgres
       - influxdb
-      - alert_service
     logging: *default-logging
 
   risk_service:
@@ -112,8 +103,8 @@ services:
       TWILIO_SMS_FROM: "+14155238886"
       HERDMIND_ALERT_RECIPIENTS: "+923001234567"
       HERDMIND_SMS_RECIPIENTS: "+923001234567"
-      TWILIO_ACCOUNT_SID: ""
-      TWILIO_AUTH_TOKEN: ""
+      TWILIO_ACCOUNT_SID: "${TWILIO_SID}"
+      TWILIO_AUTH_TOKEN: "${TWILIO_TOKEN}"
     volumes:
       - ./services/alert_service/app:/app/app
     depends_on:
@@ -126,8 +117,12 @@ services:
     container_name: herd_gateway
     ports:
       - "8000:8000"
-    restart: unless-stopped
+    volumes:
+      - ./services/gateway_service/app:/app/app
     depends_on:
-      - mqtt
-      - redis
+      redis:
+        condition: service_started
+      postgres:
+        condition: service_healthy
     logging: *default-logging
+    restart: unless-stopped

@@ -2,3 +2,5 @@ fastapi
 uvicorn
 pydantic
 twilio
+httpx>=0.24.0
+redis>=5.0.0

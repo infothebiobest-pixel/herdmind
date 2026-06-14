@@ -1,85 +1,105 @@
-import os
-import psycopg2
-import bcrypt
+import time
 import logging
+import psycopg2
+from psycopg2.extras import RealDictCursor
 
-log = logging.getLogger(__name__)
+logger = logging.getLogger("herd_gateway_auth")
 
-# Connection parameters mapping directly to your herd_postgres credentials configuration
-DB_HOST = os.getenv("POSTGRES_HOST", "postgres")
-DB_NAME = os.getenv("POSTGRES_DB", "herdmind")
-DB_USER = os.getenv("POSTGRES_USER", "herd")
-DB_PASS = os.getenv("POSTGRES_PASSWORD", "herd123")
+DB_PARAMS = {
+    "host": "postgres",  # Matches the Docker network service name perfectly
+    "user": "herd",
+    "password": "herd123",
+    "dbname": "herdmind",
+    "connect_timeout": 3
+}
 
-def get_connection():
-    return psycopg2.connect(host=DB_HOST, database=DB_NAME, user=DB_USER, password=DB_PASS)
+def wait_for_db():
+    """
+    Backoff protection gate to absorb container network timing jitter
+    """
+    logger.info("🔄 [Auth Database] Initiating database gate handshake loop...")
+    for attempt in range(1, 21):
+        try:
+            conn = psycopg2.connect(**DB_PARAMS)
+            conn.close()
+            logger.info("✅ [Auth Database] Database server discovered and verified ready.")
+            return True
+        except Exception as e:
+            logger.warning(f"⚠️ [Auth Database] [Attempt {attempt}/20] Server not ready yet: {e}")
+            time.sleep(2)
+    raise RuntimeError("🔥 Failed to connect to PostgreSQL database infrastructure.")
+
+def get_db_connection():
+    return psycopg2.connect(**DB_PARAMS)
 
 def init_auth_tables():
-    """Generates the enterprise user schema table natively on startup if absent."""
-    commands = """
-    CREATE TABLE IF NOT EXISTS users (
-        id SERIAL PRIMARY KEY,
-        username VARCHAR(50) UNIQUE NOT NULL,
-        password_hash VARCHAR(255) NOT NULL,
-        role VARCHAR(20) DEFAULT 'farmer',
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    );
-    """
-    conn = None
-    try:
-        conn = get_connection()
-        cur = conn.cursor()
-        cur.execute(commands)
-        cur.close()
-        conn.commit()
-        print("📁 [Auth Database] Enterprise user schema table synchronized successfully!")
-    except Exception as e:
-        print(f"🚨 [Auth Database] Initialization failed to build tables: {e}")
-    finally:
-        if conn:
-            conn.close()
-
-def create_user(username, password, role="farmer"):
-    """Hashes the password and records the user credentials to PostgreSQL."""
-    salt = bcrypt.gensalt(rounds=12)
-    hashed = bcrypt.hashpw(password.encode('utf-8'), salt).decode('utf-8')
+    # Wait for the storage engine to complete its local file setups first
+    wait_for_db()
     
-    conn = None
+    conn = get_db_connection()
+    cur = conn.cursor()
     try:
-        conn = get_connection()
-        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                id SERIAL PRIMARY KEY,
+                username VARCHAR(50) UNIQUE NOT NULL,
+                password_hash VARCHAR(255) NOT NULL,
+                role VARCHAR(20) DEFAULT 'farm_manager' NOT NULL
+            );
+        """)
+        conn.commit()
+        logger.info("✅ [Auth Database] User tables synchronized cleanly.")
+        
+        # Seed an administrative account if table is empty
+        cur.execute("SELECT COUNT(*) FROM users;")
+        if cur.fetchone()[0] == 0:
+            import bcrypt
+            pwd = bcrypt.hashpw("admin123".encode(), bcrypt.gensalt()).decode()
+            cur.execute(
+                "INSERT INTO users (username, password_hash, role) VALUES (%s, %s, %s);",
+                ("admin", pwd, "administrator")
+            )
+            conn.commit()
+            logger.info("👤 [Auth Database] Default seed user profile injected.")
+    except Exception as e:
+        conn.rollback()
+        logger.error(f"❌ [Auth Database] Table generation failure: {e}")
+    finally:
+        cur.close()
+        conn.close()
+
+def create_user(username, password, role="farm_manager"):
+    import bcrypt
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        pwd_hash = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
         cur.execute(
             "INSERT INTO users (username, password_hash, role) VALUES (%s, %s, %s) RETURNING id;",
-            (username, hashed, role)
+            (username, pwd_hash, role)
         )
         user_id = cur.fetchone()[0]
         conn.commit()
-        cur.close()
-        return {"id": user_id, "username": username, "role": role}
-    except psycopg2.errors.UniqueViolation:
-        if conn: conn.rollback()
+        return user_id
+    except psycopg2.IntegrityError:
+        conn.rollback()
         return None
     finally:
-        if conn: conn.close()
+        cur.close()
+        conn.close()
 
 def verify_user_credentials(username, password):
-    """Checks the plain text password against the hashed string stored in the database."""
-    conn = None
+    import bcrypt
+    conn = get_db_connection()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
     try:
-        conn = get_connection()
-        cur = conn.cursor()
-        cur.execute("SELECT password_hash, role FROM users WHERE username = %s;", (username,))
-        result = cur.fetchone()
-        cur.close()
-        
-        if not result:
-            return None
-            
-        stored_hash, role = result
-        if bcrypt.checkpw(password.encode('utf-8'), stored_hash.encode('utf-8')):
-            return {"username": username, "role": role}
-    except Exception as e:
-        print(f"🚨 [Auth Database] Authentication credential check failed: {e}")
+        cur.execute("SELECT username, password_hash, role FROM users WHERE username = %s;", (username,))
+        user = cur.fetchone()
+        if user and bcrypt.checkpw(password.encode(), user["password_hash"].encode()):
+            return {"username": user["username"], "role": user["role"]}
+        return None
+    except Exception:
+        return None
     finally:
-        if conn: conn.close()
-    return None
+        cur.close()
+        conn.close()

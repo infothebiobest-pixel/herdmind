@@ -1,10 +1,13 @@
 """
 HerdMind-X · Risk Service
 Owns risk escalation logic — decoupled from ML engine.
-Receives anomaly scores and disease labels, returns structured alert levels.
+Receives anomaly scores and disease labels, drops high-risk alerts onto Redis queue.
 """
 
+import os
+import json
 import logging
+import redis
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -28,6 +31,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ================= REDIS ENVIRONMENT STANDARD =================
+REDIS_HOST = os.getenv("REDIS_HOST", "redis")
+REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
+r_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
 
 # ---------------------------------------------------------------------------
 # Thresholds
@@ -95,6 +103,26 @@ def evaluate(req: RiskRequest):
         level = "WATCH"
     else:
         level = "NORMAL"
+
+    # -----------------------------------------------------------------------
+    # PIPELINE INTEGRATION: Queue severe items for AI Worker processing
+    # -----------------------------------------------------------------------
+    if score >= THRESHOLDS["WARNING"] or level in ["WARNING", "CRITICAL"]:
+        try:
+            queue_payload = {
+                "cow_id": req.cow_id,
+                "risk_score": score,
+                "metrics": {
+                    "rule_label": req.rule_label,
+                    "ml_label": req.ml_label,
+                    "context_disease": disease
+                }
+            }
+            # Atomic LPUSH directly to the alert worker queue
+            r_client.lpush("herd:queue:raw_anomalies", json.dumps(queue_payload))
+            log.info(f"📥 Pushed anomaly for Cow {req.cow_id} onto 'herd:queue:raw_anomalies'")
+        except Exception as e:
+            log.error(f"❌ Failed to queue anomaly payload for Cow {req.cow_id}: {e}")
 
     return RiskResponse(
         cow_id=req.cow_id,

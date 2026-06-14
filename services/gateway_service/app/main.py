@@ -1,31 +1,94 @@
 import os
 import time
+import asyncio
+import json
 import jwt
 import httpx
 import redis
-from fastapi import FastAPI, Request, Response, HTTPException, status
+import redis.asyncio as aioredis
+from fastapi import FastAPI, Request, Response, HTTPException, status, WebSocket, WebSocketDisconnect, Query
 from pydantic import BaseModel
 from contextlib import asynccontextmanager
+from typing import List
 
 # 1. Native Explicit Relative Submodule Imports
 from .auth_db import init_auth_tables, create_user, verify_user_credentials
 
 # Network configurations
 AI_SERVICE_URL = os.getenv("AI_SERVICE_URL", "http://ai_service:8001")
-REDIS_HOST     = os.getenv("REDIS_HOST", "redis")
+REDIS_HOST     = os.getenv("REDIS_HOST", "redis") # Standardized to match docker configuration
 REDIS_PORT     = int(os.getenv("REDIS_PORT", 6379))
 
 JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "herdmind_super_secret_enterprise_key_2026")
 JWT_ALGORITHM  = "HS256"
 
+# Sync client for legacy HTTP middleware rate limiting
 redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
 async_http_client = httpx.AsyncClient()
+
+# ================= WEBSOCKET MANAGEMENT CONNECTOR =================
+
+class WebSocketConnectionManager:
+    def __init__(self):
+        self.active_connections: List[WebSocket] = []
+
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.append(websocket)
+        print(f"📡 [Gateway] New dashboard socket opened. Total active paths: {len(self.active_connections)}")
+
+    def disconnect(self, websocket: WebSocket):
+        if websocket in self.active_connections:
+            self.active_connections.remove(websocket)
+            print(f"🛑 [Gateway] Dashboard socket closed. Remaining active paths: {len(self.active_connections)}")
+
+    async def broadcast(self, message: str):
+        for connection in self.active_connections:
+            try:
+                await connection.send_text(message)
+            except Exception:
+                # Handle connection drop dead states gracefully
+                pass
+
+manager = WebSocketConnectionManager()
+
+# ================= BACKGROUND REDIS PUBSUB TRANSPORT BRIDGE =================
+
+async def redis_alerts_pubsub_listener():
+    """
+    Subscribes to 'herd:alerts' on Redis, intercepts JSON packets from the 
+    alert_service worker, and fans them out directly over open WebSockets.
+    """
+    print("🚀 [Gateway] Starting background Redis Pub/Sub Alert Listener loop...")
+    while True:
+        try:
+            async_redis = aioredis.from_url(f"redis://{REDIS_HOST}:{REDIS_PORT}/0", decode_responses=True)
+            pubsub = async_redis.pubsub()
+            await pubsub.subscribe("herd:alerts")
+            print("✅ [Gateway] Subscribed successfully to channel 'herd:alerts'")
+            
+            async for message in pubsub.listen():
+                if message and message["type"] == "message":
+                    # Transport optimization: direct pass-through string stream fan-out
+                    await manager.broadcast(message["data"])
+                    
+        except asyncio.CancelledError:
+            print("⚠️ [Gateway] Redis Alert Listener task was cancelled.")
+            break
+        except Exception as e:
+            print(f"❌ [Gateway] Pub/Sub Transport Bridge disconnect: {e}. Retrying in 3 seconds...")
+            await asyncio.sleep(3)
+
+# ================= LIFECYCLE MANAGEMENT =================
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     print("🛠️ [Gateway] Initializing user database infrastructure...")
     init_auth_tables()
+    # Spawn the Redis pub/sub network worker loop directly into the app context
+    pubsub_task = asyncio.create_task(redis_alerts_pubsub_listener())
     yield
+    pubsub_task.cancel()
     await async_http_client.aclose()
 
 app = FastAPI(title="HerdMind-X API Gateway (Secured)", lifespan=lifespan)
@@ -92,6 +155,42 @@ async def login_farmer_account(user: UserAuthSchema):
     }
     token = jwt.encode(payload, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
     return {"access_token": token, "token_type": "bearer", "farmer": verified_profile["username"]}
+
+# ================= SECURED LIVE WEBSOCKET FAN-OUT ROUTE =================
+
+@app.websocket("/ws/alerts")
+async def websocket_alerts_endpoint(websocket: WebSocket, token: str = Query(None)):
+    """
+    Secured real-time WebSocket connection path. Validates JWT, extracts permissions, 
+    and opens a long-lived fan-out channel.
+    """
+    if not token:
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
+
+    try:
+        # Validate JWT structure and decrypt parameters
+        payload = jwt.decode(token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])
+        role = payload.get("role", "guest")
+        
+        # Enforce RBAC rules for data feeds
+        allowed_roles = ["administrator", "farm_manager", "vet"]
+        if role not in allowed_roles:
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+            return
+            
+    except jwt.PyJWTError:
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
+
+    # Connection accepted under security clearance
+    await manager.connect(websocket)
+    try:
+        while True:
+            # Maintain connection alive. Discard any frames sent upstream from UI.
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        manager.disconnect(websocket)
 
 # SECURED ROUTE: Validates authentication token + checks RBAC roles before proxying
 @app.api_route("/ai/{path:path}", methods=["GET", "POST", "PUT", "DELETE"])
