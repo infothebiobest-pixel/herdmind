@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HerdMind-X Real-Time Perception Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body class="bg-gray-900 text-gray-100 min-h-screen font-sans antialiased">
+
+<header class="border-b border-gray-800 bg-gray-950 px-6 py-4 flex items-center justify-between">
+    <div>
+        <h1 class="text-xl font-bold text-teal-400">HerdMind-X</h1>
+        <p class="text-xs text-gray-400">Real-Time Livestock Intelligence Layer</p>
+    </div>
+    <div class="flex items-center space-x-2">
+        <span id="indicator" class="h-3 w-3 rounded-full bg-red-500 animate-pulse"></span>
+        <span id="status" class="text-xs text-gray-400">DISCONNECTED</span>
+    </div>
+</header>
+
+<main class="p-6 max-w-7xl mx-auto space-y-6">
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <div class="bg-gray-950 border border-gray-800 rounded-lg p-5">
+            <h3 class="text-xs text-gray-400 uppercase">Herd Risk Index</h3>
+            <p id="herd-risk" class="text-3xl font-bold text-teal-400 mt-2">0%</p>
+        </div>
+        <div class="bg-gray-950 border border-gray-800 rounded-lg p-5">
+            <h3 class="text-xs text-gray-400 uppercase">Active Cows</h3>
+            <p id="cow-count" class="text-3xl font-bold text-pink-500 mt-2">0</p>
+        </div>
+    </div>
+
+    <div class="bg-gray-950 border border-gray-800 rounded-lg p-6">
+        <h3 class="text-lg font-bold mb-4">Live Risk Trend</h3>
+        <canvas id="chart" class="h-64"></canvas>
+    </div>
+
+    <div class="bg-gray-950 border border-gray-800 rounded-lg p-6">
+        <h3 class="text-lg font-bold mb-4">Live Alert Stream</h3>
+        <div id="feed" class="space-y-2 text-sm max-h-64 overflow-y-auto"></div>
+    </div>
+</main>
+
+<script>
+const HTTP = "http://localhost:8000";
+const WS = "ws://localhost:8000";
+const TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJmYXJtZXJfMDAxIiwiZXhwIjoxNzgxNjEyMjI0Ljg0NDkzNzYsInJvbGUiOiJhZG1pbmlzdHJhdG9yIn0.VZUklYonM4E1_yc3wrK2dJaFk1lXBO9uctO3ik7Duno";
+
+const ctx = document.getElementById("chart").getContext("2d");
+const chart = new Chart(ctx, {
+    type: "line",
+    data: {
+        labels: [],
+        datasets: [{
+            label: "Risk Score",
+            data: [],
+            borderColor: "#00adb5",
+            backgroundColor: "rgba(0,173,181,0.1)",
+            tension: 0.3,
+            fill: true
+        }]
+    },
+    options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        scales: {
+            x: { ticks: { color: "#aaa" } },
+            y: { min: 0, max: 100, ticks: { color: "#aaa" } }
+        }
+    }
+});
+
+async function refreshStats() {
+    try {
+        const res = await fetch(`${HTTP}/gateway/graph/herd/risk-index`);
+        const data = await res.json();
+        if (data.status === "success") {
+            document.getElementById("herd-risk").innerText = (data.herd_risk_index ?? 0) + "%";
+            document.getElementById("cow-count").innerText = data.active_monitored_cows ?? 0;
+        }
+    } catch (e) {
+        console.log("stats error", e);
+    }
+}
+
+function connectWS() {
+    const ws = new WebSocket(`${WS}/ws/alerts?token=${TOKEN}`);
+    const indicator = document.getElementById("indicator");
+    const status = document.getElementById("status");
+    const feed = document.getElementById("feed");
+
+    ws.onopen = () => {
+        indicator.className = "h-3 w-3 rounded-full bg-green-500 animate-pulse";
+        status.innerText = "CONNECTED";
+        status.className = "text-xs text-teal-400";
+        feed.innerHTML = "";
+    };
+
+    ws.onmessage = (event) => {
+        try {
+            const d = JSON.parse(event.data);
+            const cow = d.cow_id || "SYS";
+            const score = Math.round((d.risk_score || 0) * 100);
+            const diag = d.diagnosis || "telemetry";
+
+            const row = document.createElement("div");
+            row.className = "border-b border-gray-800 py-2 flex justify-between";
+            row.innerHTML = "<div><span class='text-teal-400'>Cow-" + cow + "</span><span class='text-gray-300 ml-2'>" + diag + "</span></div><div class='" + (score > 60 ? "text-red-400" : "text-teal-400") + "'>" + score + "%</div>";
+            
+            feed.prepend(row);
+
+            if (d.risk_score !== undefined) {
+                const now = new Date().toLocaleTimeString();
+                chart.data.labels.push(now);
+                chart.data.datasets[0].data.push(score);
+
+                if (chart.data.labels.length > 20) {
+                    chart.data.labels.shift();
+                    chart.data.datasets[0].data.shift();
+                }
+                chart.update();
+                refreshStats();
+            }
+        } catch (e) {
+            console.log("parse error", e);
+        }
+    };
+
+    ws.onclose = () => {
+        indicator.className = "h-3 w-3 rounded-full bg-red-500 animate-pulse";
+        status.innerText = "RECONNECTING...";
+        setTimeout(connectWS, 2000);
+    };
+
+    ws.onerror = () => ws.close();
+}
+
+connectWS();
+setInterval(refreshStats, 10000);
+</script>
+</body>
+</html>

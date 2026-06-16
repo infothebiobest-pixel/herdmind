@@ -1,3 +1,7 @@
+
+from influxdb_client import InfluxDBClient, Point, WritePrecision
+from influxdb_client.client.write_api import SYNCHRONOUS
+import os
 import json
 import logging
 import time
@@ -147,6 +151,30 @@ def process_loop():
                 pipe.lpush(HISTORY_KEY, event_json)
                 pipe.ltrim(HISTORY_KEY, 0, MAX_HISTORICAL_ALERTS - 1)
                 pipe.execute()
+                
+                # ----------------------------------------------------
+                # 5. INFLUXDB LONG-TERM APPEND-ONLY ARCHIVAL SINK
+                # ----------------------------------------------------
+                try:
+                    influx_url = os.getenv("INFLUX_URL", "http://herd_influx:8086")
+                    influx_token = os.getenv("INFLUX_TOKEN", "cfuR3oHFeBlAbbiIxas5OcXhTY3CZxkz1_QNkAlVrCu48Y6osB-loG7UcGvP1RlN1lRugY7qsAPgHZiu3JteEA==")
+                    influx_org = os.getenv("INFLUX_ORG", "herdmind")
+                    influx_bucket = os.getenv("INFLUX_BUCKET", "herd_telemetry")
+                    
+                    with InfluxDBClient(url=influx_url, token=influx_token, org=influx_org, timeout=3000) as client:
+                        with client.write_api(write_options=SYNCHRONOUS) as write_api:
+                            point = Point("biological_risk") \
+                                .tag("cow_id", str(cow_id)) \
+                                .tag("diagnosis", str(event.get("diagnosis", "Unknown Anomaly"))) \
+                                .field("risk_percentage", float(risk_score) * 100) \
+                                .field("confidence", float(event.get("confidence", 0.0))) \
+                                .time(int(now_ts), WritePrecision.S)
+                            
+                            write_api.write(bucket=influx_bucket, org=influx_org, record=point)
+                            logger.info(f"💾 [Archival Sink] Logged long-term timeseries event for Cow {cow_id}")
+                except Exception as influx_err:
+                    logger.warning(f"⚠️ [Archival Sink] Long-term storage bypass: {influx_err}")
+                    
             except Exception as e:
                 logger.error(f"Layer 2 persistence pipeline failure: {e}")
 

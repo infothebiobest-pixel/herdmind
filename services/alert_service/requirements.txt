@@ -4,3 +4,4 @@ pydantic
 twilio
 httpx>=0.24.0
 redis>=5.0.0
+influxdb-client==1.36.1
