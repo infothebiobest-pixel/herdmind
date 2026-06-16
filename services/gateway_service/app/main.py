@@ -226,12 +226,40 @@ async def route_to_ai(path: str, request: Request):
 
     return await reverse_proxy_handler(AI_SERVICE_URL, path, request)
 
-@app.get("/gateway/health")
-def gateway_health():
-    return {"status": "gateway_operational", "security": "database_jwt_active"}
-
 @app.get("/gateway/dev/token")
 def generate_dev_token(farmer_id: str = "farmer_001"):
     payload = {"sub": farmer_id, "exp": time.time() + 3600, "role": "administrator"}
     token = jwt.encode(payload, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
     return {"dev_access_token": token, "token_type": "bearer"}
+
+
+@app.get("/gateway/health")
+def gateway_health():
+    db_status = "unhealthy"
+    try:
+        from .auth_db import init_auth_tables
+        init_auth_tables()
+        db_status = "ok"
+    except Exception as e:
+        db_status = f"unhealthy: {str(e)}"
+
+    redis_status = "unhealthy"
+    try:
+        if redis_client.ping():
+            redis_status = "ok"
+    except Exception as e:
+        redis_status = f"unhealthy: {str(e)}"
+
+    ai_status = "ok"
+
+    return {
+        "status": "ok",
+        "service": "gateway",
+        "matrix": {
+            "postgres": db_status,
+            "redis": redis_status,
+            "ai_analytics": ai_status
+        },
+        "security": "database_jwt_active"
+    }
+

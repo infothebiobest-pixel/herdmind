@@ -117,8 +117,11 @@ services:
     container_name: herd_gateway
     ports:
       - "8000:8000"
+    environment:
+      PYTHONUNBUFFERED: "1"
+      PYTHONPATH: "/app"
     volumes:
-      - ./services/gateway_service/app:/app/app
+      - ./services/gateway_service:/app
     depends_on:
       redis:
         condition: service_started
@@ -126,3 +129,4 @@ services:
         condition: service_healthy
     logging: *default-logging
     restart: unless-stopped
+

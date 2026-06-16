@@ -167,6 +167,9 @@ def startup():
         try:
             r = redis.Redis(
                 host="redis",
+                socket_timeout=15.0,
+                socket_connect_timeout=10.0,
+                socket_keepalive=True,
                 port=6379,
                 decode_responses=True,
             )
