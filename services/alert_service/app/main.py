@@ -121,14 +121,34 @@ def process_loop():
 
             event_json = json.dumps(event)
 
-            # ================= HISTORY STORE =================
+            # ================= LAYER 2 PRECOMPUTATION + HISTORY STORE =================
             try:
+                now_ts = time.time()
+                event_id = f"{cow_id}:{int(now_ts * 1000)}"
+                risk_score = float(event.get("risk_score", 0.0))
                 pipe = r.pipeline(transaction=True)
+                pipe.hset(
+                    f"herd:event:{event_id}",
+                    mapping={
+                        "cow_id": str(cow_id),
+                        "timestamp": str(now_ts),
+                        "event_json": event_json,
+                        "risk_score": str(risk_score),
+                        "diagnosis": str(event.get("diagnosis", "")),
+                        "type": str(event.get("type", "DISEASE_ALERT")),
+                    },
+                )
+                pipe.expire(f"herd:event:{event_id}", 604800)
+                ts_key = f"herd:ts:cow:{cow_id}"
+                pipe.zadd(ts_key, {event_id: now_ts})
+                pipe.zremrangebyscore(ts_key, 0, now_ts - 604800)
+                pipe.expire(ts_key, 604800)
+                pipe.hset("herd:matrix:latest_risk", cow_id, risk_score)
                 pipe.lpush(HISTORY_KEY, event_json)
                 pipe.ltrim(HISTORY_KEY, 0, MAX_HISTORICAL_ALERTS - 1)
                 pipe.execute()
             except Exception as e:
-                logger.error(f"History write failed: {e}")
+                logger.error(f"Layer 2 persistence pipeline failure: {e}")
 
             # ================= BROADCAST =================
             try:

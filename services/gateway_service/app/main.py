@@ -262,4 +262,56 @@ def gateway_health():
         },
         "security": "database_jwt_active"
     }
+# ================= TIMESERIES QUERY ROUTER LAYER =================
 
+@app.get("/gateway/graph/cow/{cow_id}/timeline")
+def get_cow_timeline(cow_id: str):
+    """
+    Fetches clean chronological sliding window records for a specific animal.
+    Resolves timeline pointers into full event hashes.
+    """
+    try:
+        # 1. Fetch event pointers chronologically from Sorted Set
+        event_ids = redis_client.zrange(f"herd:ts:cow:{cow_id}", 0, -1)
+        if not event_ids:
+            return {"status": "success", "cow_id": cow_id, "timeline": []}
+            
+        # 2. Pipeline resolve the hash records
+        pipe = redis_client.pipeline()
+        for eid in event_ids:
+            pipe.hgetall(f"herd:event:{eid}")
+        raw_resolved = pipe.execute()
+        
+        # 3. Clean string payloads into parsed JSON objects for Chart UI consumption
+        timeline_data = []
+        for item in raw_resolved:
+            if item and "event_json" in item:
+                try:
+                    item["event_json"] = json.loads(item["event_json"])
+                except Exception:
+                    pass
+                timeline_data.append(item)
+                
+        return {"status": "success", "cow_id": cow_id, "timeline": timeline_data}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Metrics generation failure: {str(e)}")
+
+@app.get("/gateway/graph/herd/risk-index")
+def get_herd_risk_index():
+    """
+    Computes global rolling average risk index across the entire herd.
+    """
+    try:
+        all_risks = redis_client.hvals("herd:matrix:latest_risk")
+        if not all_risks:
+            return {"status": "success", "herd_risk_index": 0.0, "active_monitored_cows": 0}
+        
+        float_risks = [float(r) for r in all_risks]
+        avg_index = sum(float_risks) / len(float_risks)
+        return {
+            "status": "success",
+            "herd_risk_index": round(avg_index * 100, 2),
+            "active_monitored_cows": len(float_risks)
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Aggregation indexing failure: {str(e)}")
