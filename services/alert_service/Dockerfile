@@ -2,15 +2,13 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Copy requirements first (better layer caching)
 COPY requirements.txt .
-
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy service code
+# Copy the local structure directly 
 COPY . .
 
-# Ensure Python can resolve imports like "app.*"
 ENV PYTHONPATH=/app
 
+# FIXED: Explicitly targeting app/main.py relative to WORKDIR
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

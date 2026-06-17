@@ -1,243 +1,479 @@
-
+from fastapi import FastAPI
 from influxdb_client import InfluxDBClient, Point, WritePrecision
 from influxdb_client.client.write_api import SYNCHRONOUS
+
 import os
 import json
-import logging
 import time
+import logging
 import threading
-import httpx
 import redis
-from fastapi import FastAPI
+import httpx
 
-# ================= LOGGING =================
+
+# ============================================================
+# LOGGING
+# ============================================================
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("herd_alert_service")
 
-# ================= APP =================
-app = FastAPI(title="Herd Alert Service")
 
-# ================= GLOBAL STATE =================
+# ============================================================
+# APP
+# ============================================================
+
+app = FastAPI(title="HerdMind-X Alert Service")
+
 r = None
 
-# ================= CONFIG =================
-AI_SERVICE_URL = "http://ai_service:8001/ai/analyze"
-ALERT_COOLDOWN_SEC = 1800  # 30 min
-MAX_HISTORICAL_ALERTS = 500
+
+# ============================================================
+# CONFIG
+# ============================================================
+
+AI_SERVICE_URL = os.getenv(
+    "AI_SERVICE_URL",
+    "http://ai_service:8001/ai/analyze"
+)
 
 QUEUE_NAME = "herd:queue:raw_anomalies"
 ALERT_CHANNEL = "herd:alerts"
+
 HISTORY_KEY = "herd:alerts:history"
 DLQ_KEY = "herd:queue:failed_anomalies"
 
+ALERT_COOLDOWN_SEC = 1800
+MAX_HISTORICAL_ALERTS = 500
 
-# ================= HELPERS =================
-def cooldown_key(cow_id: str, diagnosis: str) -> str:
+RISK_THRESHOLD = 0.70
+
+INFLUX_URL = os.getenv(
+    "INFLUX_URL",
+    "http://herd_influx:8086"
+)
+
+INFLUX_TOKEN = os.getenv("INFLUX_TOKEN")
+INFLUX_ORG = os.getenv("INFLUX_ORG", "herdmind")
+INFLUX_BUCKET = os.getenv("INFLUX_BUCKET", "herd_telemetry")
+
+
+# ============================================================
+# HELPERS
+# ============================================================
+
+def cooldown_key(cow_id: str, diagnosis: str):
     return f"cooldown:{cow_id}:{diagnosis.lower().replace(' ', '_')}"
 
 
-def should_throttle(cow_id: str, diagnosis: str) -> bool:
-    key = cooldown_key(cow_id, diagnosis)
-    exists = r.get(key)
+def should_throttle(cow_id: str, diagnosis: str):
 
-    if exists:
+    key = cooldown_key(cow_id, diagnosis)
+
+    if r.get(key):
         return True
 
     r.setex(key, ALERT_COOLDOWN_SEC, "1")
     return False
 
 
-# ================= AI CALL =================
-def query_ai(cow_id: str, metrics: dict):
-    diagnosis = "Unknown"
-    confidence = 0.5
-    recommendation = "Monitor animal"
+# ============================================================
+# AI
+# ============================================================
+
+def query_ai(cow_id, metrics):
 
     try:
-        with httpx.Client(timeout=5.0) as client:
+
+        payload = {
+            "cow_id": str(cow_id),
+            **metrics
+        }
+
+        with httpx.Client(timeout=5) as client:
+
             res = client.post(
                 AI_SERVICE_URL,
-                json={"cow_id": cow_id, "metrics": metrics},
+                json=payload
             )
 
             if res.status_code == 200:
+
                 data = res.json()
+
                 return (
-                    data.get("diagnosis", diagnosis),
-                    data.get("confidence", confidence),
-                    data.get("recommendation", recommendation),
+                    data.get("disease", "Unknown"),
+                    float(data.get("risk_score", 0.5)),
+                    data.get("alert_level", "Monitor")
                 )
 
-            logger.warning(f"AI service status {res.status_code} for {cow_id}")
+            logger.warning(
+                f"AI returned {res.status_code}"
+            )
 
     except Exception as e:
-        logger.warning(f"AI fallback for {cow_id}: {e}")
 
-    return diagnosis, confidence, recommendation
+        logger.warning(
+            f"AI fallback: {e}"
+        )
+
+    return (
+        "Unknown",
+        0.5,
+        "Monitor"
+    )
 
 
-# ================= WORKER LOOP =================
+# ============================================================
+# TWILIO
+# ============================================================
+
+def dispatch_external_notification(
+    cow_id,
+    diagnosis,
+    risk,
+    action
+):
+
+    sid = os.getenv("TWILIO_ACCOUNT_SID")
+    token = os.getenv("TWILIO_AUTH_TOKEN")
+
+    if not sid or not token:
+
+        logger.info(
+            "Twilio disabled."
+        )
+        return
+
+    url = (
+        f"https://api.twilio.com/"
+        f"2010-04-01/"
+        f"Accounts/{sid}/Messages.json"
+    )
+
+    payload = {
+
+        "From": os.getenv(
+            "TWILIO_WHATSAPP_FROM",
+            "whatsapp:+14155238886"
+        ),
+
+        "To": (
+            "whatsapp:"
+            + os.getenv(
+                "HERDMIND_ALERT_RECIPIENTS",
+                "+923001234567"
+            )
+        ),
+
+        "Body": (
+            f"🚨 HERDMIND-X ALERT\n\n"
+            f"Cow: {cow_id}\n"
+            f"Diagnosis: {diagnosis}\n"
+            f"Risk: {risk:.2f}\n"
+            f"Action: {action}"
+        ),
+    }
+
+    try:
+
+        with httpx.Client(timeout=10) as client:
+
+            res = client.post(
+                url,
+                auth=(sid, token),
+                data=payload
+            )
+
+            if res.status_code in [200, 201]:
+
+                logger.info(
+                    f"Notification sent → {cow_id}"
+                )
+
+            else:
+
+                logger.error(
+                    f"Twilio {res.status_code}"
+                )
+
+    except Exception as e:
+
+        logger.error(
+            f"Notification failed: {e}"
+        )
+
+
+# ============================================================
+# INFLUX
+# ============================================================
+
+def archive_event(
+    cow_id,
+    diagnosis,
+    risk,
+    confidence
+):
+
+    if not INFLUX_TOKEN:
+        return
+
+    try:
+
+        with InfluxDBClient(
+            url=INFLUX_URL,
+            token=INFLUX_TOKEN,
+            org=INFLUX_ORG,
+            timeout=3000
+        ) as client:
+
+            point = (
+                Point("biological_risk")
+                .tag("cow_id", str(cow_id))
+                .tag("diagnosis", diagnosis)
+                .field(
+                    "risk_percentage",
+                    risk * 100
+                )
+                .field(
+                    "confidence",
+                    confidence
+                )
+                .time(
+                    int(time.time()),
+                    WritePrecision.S
+                )
+            )
+
+            client.write_api(
+                write_options=SYNCHRONOUS
+            ).write(
+                bucket=INFLUX_BUCKET,
+                org=INFLUX_ORG,
+                record=point
+            )
+
+    except Exception as e:
+
+        logger.warning(
+            f"Influx bypass: {e}"
+        )
+
+
+# ============================================================
+# WORKER
+# ============================================================
+
 def process_loop():
-    logger.info("🚀 Pure Sync Alert worker loop engaged and listening.")
+
+    logger.info(
+        "Alert worker started."
+    )
 
     while True:
+
         raw = None
+
         try:
-            # Clean sync blocking pop from queue
-            item = r.brpop(QUEUE_NAME, timeout=5)
+
+            item = r.brpop(
+                QUEUE_NAME,
+                timeout=5
+            )
 
             if not item:
                 continue
 
             _, raw = item
+
             payload = json.loads(raw)
 
             cow_id = payload.get("cow_id")
-            risk = payload.get("risk_score", 0)
-            metrics = payload.get("metrics", {})
+
+            risk = float(
+                payload.get(
+                    "risk_score",
+                    0
+                )
+            )
+
+            metrics = payload.get(
+                "metrics",
+                {}
+            )
 
             if not cow_id:
-                logger.warning("Dropped payload: missing cow_id")
                 continue
 
-            if risk < 0.7:
-                logger.info(f"Filtered low-risk event: cow={cow_id}, risk={risk}")
+            if risk < RISK_THRESHOLD:
                 continue
 
-            # ================= AI =================
-            diagnosis, confidence, recommendation = query_ai(cow_id, metrics)
+            diagnosis, confidence, action = (
+                query_ai(
+                    cow_id,
+                    metrics
+                )
+            )
 
-            # ================= THROTTLE =================
-            if should_throttle(cow_id, diagnosis):
-                logger.info(f"Throttled: {cow_id} ({diagnosis})")
+            if should_throttle(
+                cow_id,
+                diagnosis
+            ):
                 continue
 
-            # ================= EVENT =================
             event = {
-                "type": "DISEASE_ALERT",
-                "cow_id": cow_id,
-                "risk_score": risk,
-                "diagnosis": diagnosis,
-                "confidence": round(confidence, 3),
-                "recommendation": recommendation,
-                "timestamp": time.time(),
+
+                "type":
+                "DISEASE_ALERT",
+
+                "cow_id":
+                cow_id,
+
+                "risk_score":
+                risk,
+
+                "diagnosis":
+                diagnosis,
+
+                "confidence":
+                confidence,
+
+                "recommendation":
+                action,
+
+                "timestamp":
+                time.time()
             }
 
             event_json = json.dumps(event)
 
-            # ================= LAYER 2 PRECOMPUTATION + HISTORY STORE =================
-            try:
-                now_ts = time.time()
-                event_id = f"{cow_id}:{int(now_ts * 1000)}"
-                risk_score = float(event.get("risk_score", 0.0))
-                pipe = r.pipeline(transaction=True)
-                pipe.hset(
-                    f"herd:event:{event_id}",
-                    mapping={
-                        "cow_id": str(cow_id),
-                        "timestamp": str(now_ts),
-                        "event_json": event_json,
-                        "risk_score": str(risk_score),
-                        "diagnosis": str(event.get("diagnosis", "")),
-                        "type": str(event.get("type", "DISEASE_ALERT")),
-                    },
+            r.lpush(
+                HISTORY_KEY,
+                event_json
+            )
+
+            r.ltrim(
+                HISTORY_KEY,
+                0,
+                MAX_HISTORICAL_ALERTS
+            )
+
+            archive_event(
+                cow_id,
+                diagnosis,
+                risk,
+                confidence
+            )
+
+            if action in [
+                "CRITICAL",
+                "WARNING"
+            ]:
+
+                dispatch_external_notification(
+                    cow_id,
+                    diagnosis,
+                    risk,
+                    action
                 )
-                pipe.expire(f"herd:event:{event_id}", 604800)
-                ts_key = f"herd:ts:cow:{cow_id}"
-                pipe.zadd(ts_key, {event_id: now_ts})
-                pipe.zremrangebyscore(ts_key, 0, now_ts - 604800)
-                pipe.expire(ts_key, 604800)
-                pipe.hset("herd:matrix:latest_risk", cow_id, risk_score)
-                pipe.lpush(HISTORY_KEY, event_json)
-                pipe.ltrim(HISTORY_KEY, 0, MAX_HISTORICAL_ALERTS - 1)
-                pipe.execute()
-                
-                # ----------------------------------------------------
-                # 5. INFLUXDB LONG-TERM APPEND-ONLY ARCHIVAL SINK
-                # ----------------------------------------------------
-                try:
-                    influx_url = os.getenv("INFLUX_URL", "http://herd_influx:8086")
-                    influx_token = os.getenv("INFLUX_TOKEN", "cfuR3oHFeBlAbbiIxas5OcXhTY3CZxkz1_QNkAlVrCu48Y6osB-loG7UcGvP1RlN1lRugY7qsAPgHZiu3JteEA==")
-                    influx_org = os.getenv("INFLUX_ORG", "herdmind")
-                    influx_bucket = os.getenv("INFLUX_BUCKET", "herd_telemetry")
-                    
-                    with InfluxDBClient(url=influx_url, token=influx_token, org=influx_org, timeout=3000) as client:
-                        with client.write_api(write_options=SYNCHRONOUS) as write_api:
-                            point = Point("biological_risk") \
-                                .tag("cow_id", str(cow_id)) \
-                                .tag("diagnosis", str(event.get("diagnosis", "Unknown Anomaly"))) \
-                                .field("risk_percentage", float(risk_score) * 100) \
-                                .field("confidence", float(event.get("confidence", 0.0))) \
-                                .time(int(now_ts), WritePrecision.S)
-                            
-                            write_api.write(bucket=influx_bucket, org=influx_org, record=point)
-                            logger.info(f"💾 [Archival Sink] Logged long-term timeseries event for Cow {cow_id}")
-                except Exception as influx_err:
-                    logger.warning(f"⚠️ [Archival Sink] Long-term storage bypass: {influx_err}")
-                    
-            except Exception as e:
-                logger.error(f"Layer 2 persistence pipeline failure: {e}")
 
-            # ================= BROADCAST =================
-            try:
-                r.publish(ALERT_CHANNEL, event_json)
-            except Exception as e:
-                logger.error(f"Publish failed: {e}")
+            r.publish(
+                ALERT_CHANNEL,
+                event_json
+            )
 
-            logger.info(f"ALERT SENT: {cow_id} → {diagnosis}")
+            logger.info(
+                f"ALERT → "
+                f"{cow_id} "
+                f"{diagnosis}"
+            )
 
         except redis.exceptions.RedisError as e:
-            logger.error(f"Redis link error inside loop: {e}")
+
+            logger.error(
+                f"Redis error: {e}"
+            )
+
             time.sleep(2)
 
         except Exception as e:
-            logger.error(f"Worker processing error: {e}")
 
-            # ================= DLQ =================
+            logger.error(
+                f"Worker error: {e}"
+            )
+
             if raw:
+
                 try:
-                    r.lpush(DLQ_KEY, raw)
-                    logger.warning("Moved corrupt payload to DLQ channel.")
-                except Exception as dlq_err:
-                    logger.error(f"DLQ failed: {dlq_err}")
+                    r.lpush(
+                        DLQ_KEY,
+                        raw
+                    )
+
+                except Exception:
+                    pass
 
             time.sleep(2)
 
 
-# ================= STARTUP =================
+# ============================================================
+# STARTUP
+# ============================================================
+
 @app.on_event("startup")
 def startup():
+
     global r
 
-    logger.info("Connecting to Redis Core via Sync Driver...")
+    for i in range(10):
 
-    for i in range(1, 11):
         try:
+
             r = redis.Redis(
                 host="redis",
-                socket_timeout=15.0,
-                socket_connect_timeout=10.0,
-                socket_keepalive=True,
                 port=6379,
                 decode_responses=True,
+                socket_timeout=15
             )
+
             r.ping()
-            logger.info("✅ Redis connected completely.")
+
+            logger.info(
+                "Redis connected."
+            )
+
             break
+
         except Exception as e:
-            logger.warning(f"Redis connection retry ({i}/10): {e}")
+
+            logger.warning(
+                f"Retry {i+1}/10 → {e}"
+            )
+
             time.sleep(2)
+
     else:
-        raise RuntimeError("Redis infrastructure communication failure.")
 
-    # Spawn daemon thread worker loop to stay isolated from main server lifecycle
-    threading.Thread(target=process_loop, daemon=True).start()
+        raise RuntimeError(
+            "Redis unavailable"
+        )
+
+    threading.Thread(
+        target=process_loop,
+        daemon=True
+    ).start()
 
 
-# ================= HEALTH =================
+# ============================================================
+# HEALTH
+# ============================================================
+
 @app.get("/health")
 def health():
+
     return {
+
         "status": "ok",
         "worker": "sync_thread_running"
     }
+
