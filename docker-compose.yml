@@ -84,6 +84,8 @@ services:
   risk_service:
     build: ./services/risk_service
     container_name: herd_risk_service
+    ports:
+      - "8003:8003"
     depends_on:
       - mqtt
       - postgres
@@ -129,4 +131,3 @@ services:
         condition: service_healthy
     logging: *default-logging
     restart: unless-stopped
-

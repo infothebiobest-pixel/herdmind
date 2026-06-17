@@ -13,3 +13,4 @@ pytest-asyncio==1.4.0
 requests
 requests
 redis>=5.0.0
+requests
