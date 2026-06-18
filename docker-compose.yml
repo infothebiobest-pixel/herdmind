@@ -24,9 +24,9 @@ services:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U herd -d herdmind"]
-      interval: 10s   # Relaxed window to avoid premature failure flags during fsync
+      interval: 10s   
       timeout: 10s
-      retries: 30     # Extended retry buffer allowance (allows up to 5 mins of recovery)
+      retries: 30     
     restart: unless-stopped
     logging: *default-logging
 
@@ -183,6 +183,20 @@ services:
     depends_on:
       gateway:
         condition: service_healthy
+    restart: unless-stopped
+    logging: *default-logging
+
+  # ================= FRONTEND WEB SERVER =================
+  frontend:
+    image: nginx:alpine
+    container_name: herd_frontend
+    ports:
+      - "3000:80"  # 🎯 Maps local Port 3000 to the container's standard HTTP port
+    volumes:
+      - ./test_dashboard.html:/usr/share/nginx/html/index.html:ro
+    depends_on:
+      reverse_proxy:
+        condition: service_started
     restart: unless-stopped
     logging: *default-logging
 

@@ -37,7 +37,7 @@
         const mockToken = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJhZG1pbl9mYXJtZXIiLCJleHAiOjE3ODE4NTk5OTMuODExODU3Miwicm9sZSI6ImZhcm1fbWFuYWdlciJ9.vwjDIouzz9psMWeV1onsIeB0DU1xrO7VuKIZZlzmhQA";
         
         // Connect directly through your public port 80 proxy path
-        const ws = new WebSocket(`ws://localhost:80/ws/alerts?token=${mockToken}`);
+        const ws = new WebSocket(`ws://${window.location.hostname}:80/ws/alerts?token=${mockToken}`);
         const statusEl = document.getElementById('stream-status');
         const logEl = document.getElementById('alert-log');
 
