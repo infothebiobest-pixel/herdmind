@@ -1,3 +1,7 @@
+# =====================================================================
+# HerdMind-X: Enterprise Architecture Orchestration Layer (Phase 1 & 2)
+# =====================================================================
+
 x-logging: &default-logging
   driver: "json-file"
   options:
@@ -5,8 +9,10 @@ x-logging: &default-logging
     max-file: "3"
 
 services:
+
+  # ================= DATABASE LAYER =================
   postgres:
-    image: postgres:16
+    image: postgres:16-alpine
     container_name: herd_postgres
     environment:
       POSTGRES_USER: herd
@@ -14,106 +20,132 @@ services:
       POSTGRES_DB: herdmind
     ports:
       - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U herd -d herdmind"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-    logging: *default-logging
+      interval: 10s   # Relaxed window to avoid premature failure flags during fsync
+      timeout: 10s
+      retries: 30     # Extended retry buffer allowance (allows up to 5 mins of recovery)
     restart: unless-stopped
+    logging: *default-logging
 
+  # ================= TIME SERIES =================
   influxdb:
-    image: influxdb:2.7
+    image: influxdb:2.7-alpine
     container_name: herd_influx
     ports:
       - "8086:8086"
     volumes:
-      - ./infra/influxdb/data:/var/lib/influxdb2
-      - ./infra/influxdb/config:/etc/influxdb2
-    logging: *default-logging
+      - influx_data:/var/lib/influxdb2
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:8086/health || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
     restart: unless-stopped
+    logging: *default-logging
 
+  # ================= MESSAGE BROKER =================
   redis:
     image: redis:7-alpine
     container_name: herd_redis
     ports:
       - "6379:6379"
-    logging: *default-logging
+    command: redis-server --appendonly yes --appendfsync everysec
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
     restart: unless-stopped
+    logging: *default-logging
 
+  # ================= MQTT EDGE =================
   mqtt:
     image: eclipse-mosquitto:2
     container_name: herd_mosquitto
-    hostname: mqtt
     ports:
       - "1883:1883"
-      - "9001:9001"
     volumes:
       - ./infra/mosquitto/config/mosquitto.conf:/mosquitto/config/mosquitto.conf
-    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "mosquitto_sub", "-t", "$$SYS/#", "-C", "1", "-W", "3"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
     restart: unless-stopped
+    logging: *default-logging
 
+  # ================= EDGE DEVICE =================
   edge:
     build: ./edge
     container_name: herd_edge
     depends_on:
-      - mqtt
-    logging: *default-logging
+      mqtt:
+        condition: service_healthy
     restart: unless-stopped
+    logging: *default-logging
 
+  # ================= AI SERVICE =================
   ai_service:
     build: ./services/ai_service
     container_name: herd_ai_service
-    init: true
-    restart: unless-stopped
     ports:
       - "8001:8001"
     environment:
       PYTHONUNBUFFERED: "1"
       PYTHONPATH: "/app"
-      INFLUX_URL: "http://influxdb:8086"
-      INFLUX_TOKEN: "cfuR3oHFeBlAbbiIxas5OcXhTY3CZxkz1_QNkAlVrCu48Y6osB-loG7UcGvP1RlN1lRugY7qsAPgHZiu3JteEA=="
-      INFLUX_ORG: "herdmind"
-      INFLUX_BUCKET: "herd_telemetry"
-      MQTT_BROKER: mqtt
-      MQTT_PORT: 1883
+      INFLUX_URL: "http://herd_influx:8086"
+      MQTT_BROKER: herd_mosquitto
     depends_on:
-      - influxdb
+      influxdb:
+        condition: service_healthy
+    restart: unless-stopped
     logging: *default-logging
 
+  # ================= RISK ENGINE =================
   risk_service:
     build: ./services/risk_service
     container_name: herd_risk_service
     ports:
       - "8003:8003"
+    environment:
+      PYTHONUNBUFFERED: "1"
+      PYTHONPATH: "/app"
+      DATABASE_URL: "postgresql://herd:herd123@herd_postgres:5432/herdmind"
+      MQTT_BROKER: herd_mosquitto
     depends_on:
-      - mqtt
-      - postgres
-    logging: *default-logging
+      postgres:
+        condition: service_healthy
+      mqtt:
+        condition: service_healthy
     restart: unless-stopped
+    logging: *default-logging
 
+  # ================= ALERT ENGINE =================
   alert_service:
     build: ./services/alert_service
     container_name: herd_alert_service
-    init: true
-    restart: unless-stopped
     ports:
-      - "8002:8000"
+      - "8002:8002"
     environment:
       PYTHONUNBUFFERED: "1"
+      PYTHONPATH: "/app"
+      REDIS_HOST: herd_redis
+      MQTT_BROKER: herd_mosquitto
       TWILIO_WHATSAPP_FROM: "whatsapp:+14155238886"
-      TWILIO_SMS_FROM: "+14155238886"
-      HERDMIND_ALERT_RECIPIENTS: "+923001234567"
-      HERDMIND_SMS_RECIPIENTS: "+923001234567"
-      TWILIO_ACCOUNT_SID: "${TWILIO_SID}"
-      TWILIO_AUTH_TOKEN: "${TWILIO_TOKEN}"
-    volumes:
-      - ./services/alert_service/app:/app/app
     depends_on:
-      - mqtt
-      - redis
+      redis:
+        condition: service_healthy
+      mqtt:
+        condition: service_healthy
+    restart: unless-stopped
     logging: *default-logging
 
+  # ================= GATEWAY =================
   gateway:
     build: ./services/gateway_service
     container_name: herd_gateway
@@ -122,12 +154,40 @@ services:
     environment:
       PYTHONUNBUFFERED: "1"
       PYTHONPATH: "/app"
+      REDIS_HOST: herd_redis
+      DATABASE_URL: "postgresql://herd:herd123@herd_postgres:5432/herdmind"
+      AI_SERVICE_URL: "http://herd_ai_service:8001"
     volumes:
       - ./services/gateway_service:/app
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; s = socket.socket(); s.settimeout(2); s.connect(('127.0.0.1', 8000))"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
     depends_on:
       redis:
-        condition: service_started
+        condition: service_healthy
       postgres:
         condition: service_healthy
-    logging: *default-logging
     restart: unless-stopped
+    logging: *default-logging
+
+  # ================= REVERSE PROXY =================
+  reverse_proxy:
+    image: nginx:alpine
+    container_name: herd_proxy
+    ports:
+      - "80:80"
+    volumes:
+      - ./infra/nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      gateway:
+        condition: service_healthy
+    restart: unless-stopped
+    logging: *default-logging
+
+# ================= VOLUMES =================
+volumes:
+  postgres_data:
+  redis_data:
+  influx_data:

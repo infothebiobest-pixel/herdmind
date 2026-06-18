@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HerdMind-X · Live Monitoring Stream</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0f172a; color: #e2e8f0; padding: 30px; }
+        h1 { color: #38bdf8; font-size: 24px; margin-bottom: 5px; }
+        p { color: #94a3b8; margin-top: 0; margin-bottom: 25px; }
+        #stream-status { display: inline-block; padding: 5px 10px; border-radius: 4px; font-weight: bold; font-size: 12px; margin-bottom: 20px; }
+        .connected { background: #065f46; color: #34d399; }
+        .disconnected { background: #991b1b; color: #f87171; }
+        #alert-log { display: flex; flex-direction: column; gap: 15px; }
+        .alert-card { background: #1e293b; border-left: 5px solid #ef4444; padding: 15px; border-radius: 4px; box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1); }
+        .warning-card { border-left-color: #f59e0b; }
+        .card-header { display: flex; justify-content: space-between; font-weight: bold; margin-bottom: 8px; }
+        .cow-id { color: #38bdf8; }
+        .alert-level { font-size: 12px; padding: 2px 6px; border-radius: 3px; background: #7f1d1d; color: #fca5a5; }
+        .warning-level { background: #78350f; color: #fde68a; }
+        .recommendation { background: #0f172a; padding: 10px; border-radius: 4px; font-size: 13px; margin-top: 10px; border: 1px solid #334155; }
+        .delta { font-size: 12px; color: #a7f3d0; margin-top: 5px; }
+    </style>
+</head>
+<body>
+
+    <h1>HerdMind-X Operations Core</h1>
+    <p>Phase 2 State-Aware Agent Outbound WebSocket Feed Pipeline</p>
+
+    <div id="stream-status" class="disconnected">CONNECTING TO PIPELINE...</div>
+
+    <div id="alert-log">
+        <!-- Live stream messages will insert here dynamically -->
+    </div>
+
+    <script>
+        const mockToken = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJhZG1pbl9mYXJtZXIiLCJleHAiOjE3ODE4NTk5OTMuODExODU3Miwicm9sZSI6ImZhcm1fbWFuYWdlciJ9.vwjDIouzz9psMWeV1onsIeB0DU1xrO7VuKIZZlzmhQA";
+        
+        // Connect directly through your public port 80 proxy path
+        const ws = new WebSocket(`ws://localhost:80/ws/alerts?token=${mockToken}`);
+        const statusEl = document.getElementById('stream-status');
+        const logEl = document.getElementById('alert-log');
+
+        ws.onopen = () => {
+            statusEl.innerText = "STREAM RUNNING (LIVE)";
+            statusEl.className = "connected";
+            console.log("Connected successfully to NGINX Proxy.");
+        };
+
+        ws.onclose = () => {
+            statusEl.innerText = "STREAM CLOSED (DISCONNECTED)";
+            statusEl.className = "disconnected";
+        };
+
+        ws.onmessage = (messageEvent) => {
+            try {
+                const event = JSON.parse(messageEvent.data);
+                console.log("Event incoming:", event);
+
+                if (event.event_type !== "AGENT_ALERT") return;
+
+                const card = document.createElement('div');
+                card.className = `alert-card ${event.alert_level === 'WARNING' ? 'warning-card' : ''}`;
+
+                card.innerHTML = `
+                    <div class="card-header">
+                        <div>Animal Identity: <span class="cow-id">Cow #${event.cow_id}</span></div>
+                        <span class="alert-level ${event.alert_level === 'WARNING' ? 'warning-level' : ''}">${event.alert_level}</span>
+                    </div>
+                    <div><strong>Diagnosis Insight:</strong> ${event.disease.replace(/_/g, ' ').toUpperCase()}</div>
+                    <div class="delta">Calculated Moving Trend Delta: +${event.temp_delta}°C</div>
+                    <div class="recommendation"><strong>Agent Action Directive:</strong> ${event.message}</div>
+                `;
+
+                logEl.insertBefore(card, logEl.firstChild);
+            } catch (e) {
+                console.error("Payload frame error:", e);
+            }
+        };
+    </script>
+</body>
+</html>

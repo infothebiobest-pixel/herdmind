@@ -1,7 +1,7 @@
 """
 HerdMind-X · Risk Service
 Owns risk escalation logic — decoupled from ML engine.
-Receives anomaly scores and disease labels, drops high-risk alerts onto Redis queue.
+Receives anomaly scores and disease labels, drops high-risk alerts onto the Redis Stream.
 """
 
 import os
@@ -105,24 +105,30 @@ def evaluate(req: RiskRequest):
         level = "NORMAL"
 
     # -----------------------------------------------------------------------
-    # PIPELINE INTEGRATION: Queue severe items for AI Worker processing
+    # PIPELINE INTEGRATION: Append severe items onto Redis Stream
     # -----------------------------------------------------------------------
     if score >= THRESHOLDS["WARNING"] or level in ["WARNING", "CRITICAL"]:
         try:
-            queue_payload = {
-                "cow_id": req.cow_id,
-                "risk_score": score,
-                "metrics": {
-                    "rule_label": req.rule_label,
-                    "ml_label": req.ml_label,
-                    "context_disease": disease
-                }
+            # Enforce the specific target fields required by your Gateway filter layout
+            clean_event = {
+                "animal_id": str(req.cow_id),
+                "risk_score": float(score),
+                "cow_id": str(req.cow_id),
+                "alert_level": level,
+                "disease": disease,
+                "message": MESSAGE_MAP.get(disease, f"Unspecified anomaly detected: {disease}")
             }
-            # Atomic LPUSH directly to the alert worker queue
-            r_client.lpush("herd:queue:raw_anomalies", json.dumps(queue_payload))
-            log.info(f"📥 Pushed anomaly for Cow {req.cow_id} onto 'herd:queue:raw_anomalies'")
+            
+            # Pack payload inside a "data" property key string just like your gateway reader expects
+            stream_payload = {
+                "data": json.dumps(clean_event)
+            }
+            
+            # FIX: Swapped legacy lpush out for persistent append-only Redis Stream logging
+            r_client.xadd("herd:alerts:stream", stream_payload)
+            log.info(f"🚀 [Risk Service] Streamed persistent alert for Cow {req.cow_id} onto 'herd:alerts:stream'")
         except Exception as e:
-            log.error(f"❌ Failed to queue anomaly payload for Cow {req.cow_id}: {e}")
+            log.error(f"❌ Failed to stream event payload for Cow {req.cow_id}: {e}")
 
     return RiskResponse(
         cow_id=req.cow_id,
