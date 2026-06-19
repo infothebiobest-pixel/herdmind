@@ -1,82 +1,103 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>HerdMind-X · Live Monitoring Stream</title>
-    <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0f172a; color: #e2e8f0; padding: 30px; }
-        h1 { color: #38bdf8; font-size: 24px; margin-bottom: 5px; }
-        p { color: #94a3b8; margin-top: 0; margin-bottom: 25px; }
-        #stream-status { display: inline-block; padding: 5px 10px; border-radius: 4px; font-weight: bold; font-size: 12px; margin-bottom: 20px; }
-        .connected { background: #065f46; color: #34d399; }
-        .disconnected { background: #991b1b; color: #f87171; }
-        #alert-log { display: flex; flex-direction: column; gap: 15px; }
-        .alert-card { background: #1e293b; border-left: 5px solid #ef4444; padding: 15px; border-radius: 4px; box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1); }
-        .warning-card { border-left-color: #f59e0b; }
-        .card-header { display: flex; justify-content: space-between; font-weight: bold; margin-bottom: 8px; }
-        .cow-id { color: #38bdf8; }
-        .alert-level { font-size: 12px; padding: 2px 6px; border-radius: 3px; background: #7f1d1d; color: #fca5a5; }
-        .warning-level { background: #78350f; color: #fde68a; }
-        .recommendation { background: #0f172a; padding: 10px; border-radius: 4px; font-size: 13px; margin-top: 10px; border: 1px solid #334155; }
-        .delta { font-size: 12px; color: #a7f3d0; margin-top: 5px; }
-    </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>HerdMind-X · Enterprise Livestock Intelligence</title>
+<style>
+:root{
+--bg-main:#0f172a;
+--bg-card:#1e293b;
+--text-main:#e2e8f0;
+--text-muted:#94a3b8;
+--primary:#38bdf8;
+--critical:#ef4444;
+--warning:#f59e0b;
+}
+body{
+margin:0;
+padding:30px;
+font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+background:var(--bg-main);
+color:var(--text-main);
+}
+h1{ margin:0; color:var(--primary); font-weight:800; }
+.subtitle{ color:var(--text-muted); }
+#stream-status{ display:inline-flex; gap:8px; padding:8px 14px; margin-top:15px; border-radius:20px; font-size:12px; font-weight:bold; }
+.connected{ background:#065f46; color:#34d399; }
+.disconnected{ background:#991b1b; color:#f87171; }
+.stats{ display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:16px; margin-top:24px; }
+.card{ background:var(--bg-card); padding:18px; border-radius:8px; border: 1px solid #334155; }
+.big{ font-size:32px; font-weight:800; margin-top:5px; }
+#total{ color:var(--primary); }
+#critical{ color:var(--critical); }
+#warning{ color:var(--warning); }
+#alert-log{ margin-top:25px; display:flex; flex-direction:column; gap:14px; }
+.alert{ background:var(--bg-card); padding:16px; border-left:6px solid var(--critical); border-radius:6px; border-top:1px solid #334155; border-right:1px solid #334155; border-bottom:1px solid #334155; }
+.warning-card { border-left-color:var(--warning); }
+.badge{ padding:4px 8px; font-size:11px; border-radius:4px; font-weight:bold; float:right; text-transform:uppercase; }
+.critical-badge{ background:#7f1d1d; color:#fca5a5; }
+.warning-badge{ background:#78350f; color:#fde68a; }
+.recommendation-box { background:#0f172a; padding:10px; border-radius:4px; font-size:13px; margin-top:10px; border:1px solid #334155; color:#cbd5e1; }
+.metrics-row { font-size:13px; color:var(--text-muted); margin-top:6px; }
+</style>
 </head>
 <body>
 
-    <h1>HerdMind-X Operations Core</h1>
-    <p>Phase 2 State-Aware Agent Outbound WebSocket Feed Pipeline</p>
+<h1>HerdMind-X Operations Board</h1>
+<p class="subtitle">Phase 2 · State-Aware Real-Time Diagnostic Stream</p>
+<div id="stream-status" class="disconnected">● Connecting…</div>
 
-    <div id="stream-status" class="disconnected">CONNECTING TO PIPELINE...</div>
+<div class="stats">
+    <div class="card"><div>Total Incidents</div><div class="big" id="total">0</div></div>
+    <div class="card"><div>Critical Escalations</div><div class="big" id="critical">0</div></div>
+    <div class="card"><div>Warning Anomalies</div><div class="big" id="warning">0</div></div>
+</div>
 
-    <div id="alert-log">
-        <!-- Live stream messages will insert here dynamically -->
-    </div>
+<div id="alert-log"></div>
 
-    <script>
-        const mockToken = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJhZG1pbl9mYXJtZXIiLCJleHAiOjE3ODE4NTk5OTMuODExODU3Miwicm9sZSI6ImZhcm1fbWFuYWdlciJ9.vwjDIouzz9psMWeV1onsIeB0DU1xrO7VuKIZZlzmhQA";
-        
-        // Connect directly through your public port 80 proxy path
-        const ws = new WebSocket(`ws://${window.location.hostname}:80/ws/alerts?token=${mockToken}`);
-        const statusEl = document.getElementById('stream-status');
-        const logEl = document.getElementById('alert-log');
+<script>
+const statusEl = document.getElementById("stream-status");
+const logEl = document.getElementById("alert-log");
+let counters = { total: 0, critical: 0, warning: 0 };
 
-        ws.onopen = () => {
-            statusEl.innerText = "STREAM RUNNING (LIVE)";
-            statusEl.className = "connected";
-            console.log("Connected successfully to NGINX Proxy.");
-        };
+function updateCounters(level) {
+    counters.total++;
+    if (level === "CRITICAL") counters.critical++;
+    if (level === "WARNING") counters.warning++;
+    document.getElementById("total").innerText = counters.total;
+    document.getElementById("critical").innerText = counters.critical;
+    document.getElementById("warning").innerText = counters.warning;
+}
 
-        ws.onclose = () => {
-            statusEl.innerText = "STREAM CLOSED (DISCONNECTED)";
-            statusEl.className = "disconnected";
-        };
+function renderAlert(e) {
+    const card = document.createElement("div");
+    card.className = `alert ${e.alert_level === "WARNING" ? "warning-card" : ""}`;
+    card.innerHTML = `
+        <div>
+            <b>Livestock Index: Cow #${e.cow_id}</b>
+            <span class="badge ${e.alert_level === "WARNING" ? "warning-badge" : "critical-badge"}">${e.alert_level}</span>
+        </div>
+        <div style="margin-top:8px; font-weight:600;">Diagnosis Insight: ${(e.disease || "UNKNOWN").replaceAll("_", " ").toUpperCase()}</div>
+        <div class="metrics-row">📈 Moving Window Variance: +${e.temp_delta || 0}°C | Risk Weight: ${Number(e.risk_score).toFixed(3)}</div>
+        <div class="recommendation-box"><strong>Agent Directive:</strong> ${e.message || "Monitor biological parameters closely."}</div>
+    `;
+    logEl.insertBefore(card, logEl.firstChild);
+}
 
-        ws.onmessage = (messageEvent) => {
-            try {
-                const event = JSON.parse(messageEvent.data);
-                console.log("Event incoming:", event);
+const mockToken = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJhZG1pbl9mYXJtZXIiLCJleHAiOjE3ODE5MzkzNTgsInJvbGUiOiJmYXJtX21hbmFnZXIifQ.x7acVBEFz2GVdOqGDAd65dBKf4dgerZNrgyVyD4DfDk";
+const ws = new WebSocket(`ws://127.0.0.1:8000/ws/alerts?token=${mockToken}`);
 
-                if (event.event_type !== "AGENT_ALERT") return;
-
-                const card = document.createElement('div');
-                card.className = `alert-card ${event.alert_level === 'WARNING' ? 'warning-card' : ''}`;
-
-                card.innerHTML = `
-                    <div class="card-header">
-                        <div>Animal Identity: <span class="cow-id">Cow #${event.cow_id}</span></div>
-                        <span class="alert-level ${event.alert_level === 'WARNING' ? 'warning-level' : ''}">${event.alert_level}</span>
-                    </div>
-                    <div><strong>Diagnosis Insight:</strong> ${event.disease.replace(/_/g, ' ').toUpperCase()}</div>
-                    <div class="delta">Calculated Moving Trend Delta: +${event.temp_delta}°C</div>
-                    <div class="recommendation"><strong>Agent Action Directive:</strong> ${event.message}</div>
-                `;
-
-                logEl.insertBefore(card, logEl.firstChild);
-            } catch (e) {
-                console.error("Payload frame error:", e);
-            }
-        };
-    </script>
+ws.onopen = () => { statusEl.className = "connected"; statusEl.innerText = "● Stream Running"; };
+ws.onclose = () => { statusEl.className = "disconnected"; statusEl.innerText = "● Disconnected"; };
+ws.onmessage = (msg) => {
+    try {
+        const e = JSON.parse(msg.data);
+        if (e.event_type !== "AGENT_ALERT") return;
+        updateCounters(e.alert_level);
+        renderAlert(e);
+    } catch (err) { console.error("Parse exception:", err); }
+};
+</script>
 </body>
 </html>

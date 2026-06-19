@@ -10,7 +10,6 @@ x-logging: &default-logging
 
 services:
 
-  # ================= DATABASE LAYER =================
   postgres:
     image: postgres:16-alpine
     container_name: herd_postgres
@@ -30,29 +29,34 @@ services:
     restart: unless-stopped
     logging: *default-logging
 
-  # ================= TIME SERIES =================
   influxdb:
     image: influxdb:2.7-alpine
     container_name: herd_influx
     ports:
       - "8086:8086"
+    environment:
+      - DOCKER_INFLUXDB_INIT_MODE=setup
+      - DOCKER_INFLUXDB_INIT_USERNAME=herd
+      - DOCKER_INFLUXDB_INIT_PASSWORD=herdmind123456
+      - DOCKER_INFLUXDB_INIT_ORG=herdmind
+      - DOCKER_INFLUXDB_INIT_BUCKET=herd_telemetry
+      - DOCKER_INFLUXDB_INIT_ADMIN_TOKEN=cfuR3oHFeBlAbbiIxas5OcXhTY3CZxkz1_QNkAlVrCu48Y6osB-loG7UcGvP1RlN1lRugY7qsAPgHZiu3JteEA==
     volumes:
       - influx_data:/var/lib/influxdb2
     healthcheck:
       test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:8086/health || exit 1"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
+      interval: 10s   # FIX: Checked slightly less frequently to prevent WSL disk write congestion
+      timeout: 10s
+      retries: 20     # FIX: Extended window to allow up to 200 seconds (3+ mins) for clean disk initialization
     restart: unless-stopped
     logging: *default-logging
 
-  # ================= MESSAGE BROKER =================
   redis:
     image: redis:7-alpine
     container_name: herd_redis
     ports:
       - "6379:6379"
-    command: redis-server --appendonly yes --appendfsync everysec
+    command: redis-server --appendonly yes --appendfsync no
     volumes:
       - redis_data:/data
     healthcheck:
@@ -63,7 +67,6 @@ services:
     restart: unless-stopped
     logging: *default-logging
 
-  # ================= MQTT EDGE =================
   mqtt:
     image: eclipse-mosquitto:2
     container_name: herd_mosquitto
@@ -79,7 +82,6 @@ services:
     restart: unless-stopped
     logging: *default-logging
 
-  # ================= EDGE DEVICE =================
   edge:
     build: ./edge
     container_name: herd_edge
@@ -89,7 +91,6 @@ services:
     restart: unless-stopped
     logging: *default-logging
 
-  # ================= AI SERVICE =================
   ai_service:
     build: ./services/ai_service
     container_name: herd_ai_service
@@ -98,7 +99,6 @@ services:
     environment:
       PYTHONUNBUFFERED: "1"
       PYTHONPATH: "/app"
-      INFLUX_URL: "http://herd_influx:8086"
       MQTT_BROKER: herd_mosquitto
     depends_on:
       influxdb:
@@ -106,7 +106,6 @@ services:
     restart: unless-stopped
     logging: *default-logging
 
-  # ================= RISK ENGINE =================
   risk_service:
     build: ./services/risk_service
     container_name: herd_risk_service
@@ -125,7 +124,6 @@ services:
     restart: unless-stopped
     logging: *default-logging
 
-  # ================= ALERT ENGINE =================
   alert_service:
     build: ./services/alert_service
     container_name: herd_alert_service
@@ -136,7 +134,6 @@ services:
       PYTHONPATH: "/app"
       REDIS_HOST: herd_redis
       MQTT_BROKER: herd_mosquitto
-      TWILIO_WHATSAPP_FROM: "whatsapp:+14155238886"
     depends_on:
       redis:
         condition: service_healthy
@@ -145,7 +142,6 @@ services:
     restart: unless-stopped
     logging: *default-logging
 
-  # ================= GATEWAY =================
   gateway:
     build: ./services/gateway_service
     container_name: herd_gateway
@@ -172,7 +168,6 @@ services:
     restart: unless-stopped
     logging: *default-logging
 
-  # ================= REVERSE PROXY =================
   reverse_proxy:
     image: nginx:alpine
     container_name: herd_proxy
@@ -186,12 +181,11 @@ services:
     restart: unless-stopped
     logging: *default-logging
 
-  # ================= FRONTEND WEB SERVER =================
   frontend:
     image: nginx:alpine
     container_name: herd_frontend
     ports:
-      - "3000:80"  # 🎯 Maps local Port 3000 to the container's standard HTTP port
+      - "3000:80"  
     volumes:
       - ./test_dashboard.html:/usr/share/nginx/html/index.html:ro
     depends_on:
@@ -200,7 +194,6 @@ services:
     restart: unless-stopped
     logging: *default-logging
 
-# ================= VOLUMES =================
 volumes:
   postgres_data:
   redis_data:
