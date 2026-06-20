@@ -11,9 +11,10 @@
         h1 { margin-top: 0; font-size: 24px; color: #38bdf8; border-bottom: 2px solid #334155; padding-bottom: 12px; }
         h2 { margin: 0 0 12px 0; font-size: 14px; text-transform: uppercase; letter-spacing: 0.05em; color: #94a3b8; }
         .metric { font-size: 36px; font-weight: bold; color: #f1f5f9; }
-        .alert-row { display: flex; justify-content: space-between; padding: 10px; border-bottom: 1px solid #334155; font-size: 14px; }
+        .alert-row { display: flex; justify-content: space-between; padding: 10px; border-bottom: 1px solid #334155; font-size: 14px; align-items: center; }
         .critical { color: #f87171; font-weight: bold; }
         .warning { color: #fbbf24; }
+        .recovered { color: #22c55e; font-size: 12px; font-weight: normal; border: 1px solid #22c55e; padding: 2px 6px; border-radius: 4px; }
         .status-tag { display: inline-block; padding: 4px 8px; border-radius: 6px; font-size: 12px; font-weight: bold; background: #22c55e; color: #0f172a; float: right; }
     </style>
 </head>
@@ -30,25 +31,27 @@
             <div class="metric" id="avg-risk">-</div>
         </div>
         <div class="card">
-            <h2>Max Peak Risk Metric</h2>
-            <div class="metric" id="max-risk" style="color: #fbbf24;">-</div>
+            <h2>Active Incidents (Latched)</h2>
+            <div class="metric" id="incident-count" style="color: #f87171;">0</div>
         </div>
     </div>
 
     <div class="grid">
         <div class="card" style="grid-column: span 2;">
-            <h2>Recent Critical System Incidents</h2>
-            <div id="incidents-container">Loading stream alerts...</div>
+            <h2>Persistent Critical System Incidents</h2>
+            <div id="incidents-container">No active incidents tracked.</div>
         </div>
         <div class="card">
-            <h2>At-Risk Cattle Inventory</h2>
+            <h2>At-Risk Cattle Inventory (Live)</h2>
             <div id="at-risk-container">Loading cache status...</div>
         </div>
     </div>
 
     <script>
-        // Use proxy gateway path on port 80 (or fall back to direct AI service on port 8001)
         const GATEWAY = window.location.origin.includes('3000') ? 'http://localhost:8001' : window.location.origin;
+        
+        // Persistent client-side memory cache for latching alerts
+        const latchedIncidents = new Map();
 
         async function fetchDashboardData() {
             try {
@@ -58,38 +61,80 @@
                     const data = await summaryRes.json();
                     document.getElementById('total-readings').innerText = data.readings || 0;
                     document.getElementById('avg-risk').innerText = data.avg_risk ? data.avg_risk.toFixed(3) : '0.000';
-                    document.getElementById('max-risk').innerText = data.max_risk ? data.max_risk.toFixed(3) : '0.000';
                 }
 
-                // 2. Fetch High Risk Detections
+                // 2. Fetch Live High-Risk Detections to feed the Latch Engine
                 const riskRes = await fetch(`${GATEWAY}/herd/at-risk`);
                 if (riskRes.ok) {
                     const data = await riskRes.json();
-                    let html = '';
+                    
+                    // LATCH LOGIC: Add newly discovered at-risk cows to our persistent local cache map
+                    if (data.cows && data.cows.length > 0) {
+                        data.cows.forEach(c => {
+                            latchedIncidents.set(c.cow_id, {
+                                cow_id: c.cow_id,
+                                risk_score: c.risk_score,
+                                timestamp: new Date().toLocaleTimeString(),
+                                consecutiveHealthyCycles: 0
+                            });
+                        });
+                    }
+
+                    // Render Live Inventory Map
+                    let inventoryHtml = '';
                     if (!data.cows || data.cows.length === 0) {
-                        html = '<div style="color: #22c55e; padding: 10px;">🟢 All 5 cows operating within normal parameters.</div>';
+                        inventoryHtml = '<div style="color: #22c55e; padding: 10px;">🟢 Current snapshot shows all cows stable.</div>';
                     } else {
                         data.cows.forEach(c => {
-                            html += `<div class="alert-row warning"><span>Cow #${c.cow_id}</span><span>Risk: ${(c.risk_score * 100).toFixed(0)}%</span></div>`;
+                            inventoryHtml += `<div class="alert-row warning"><span>Cow #${c.cow_id}</span><span>Risk: ${(c.risk_score * 100).toFixed(0)}%</span></div>`;
                         });
                     }
-                    document.getElementById('at-risk-container').innerHTML = html;
+                    document.getElementById('at-risk-container').innerHTML = inventoryHtml;
                 }
 
-                // 3. Fetch Recent Logged Anomalies
-                const alertRes = await fetch(`${GATEWAY}/alerts/recent`);
-                if (alertRes.ok) {
-                    const data = await alertRes.json();
-                    let html = '';
-                    if (!data.alerts || data.alerts.length === 0) {
-                        html = '<div style="padding: 10px; color: #94a3b8;">No immediate anomaly alarms in storage retention window.</div>';
-                    } else {
-                        data.alerts.slice(0, 5).forEach(a => {
-                            html += `<div class="alert-row"><span class="critical">⚠️ Critical Risk Event (Cow #${a.cow_id})</span><span>Risk Score: ${a.risk_score}</span></div>`;
-                        });
+                // 3. Process Latch Maintenance & Recovery Verification Loop
+                // For each latched alert, cross-reference its individual latest metric score
+                for (let [cowId, incident] of latchedIncidents.entries()) {
+                    try {
+                        const cowRes = await fetch(`${GATEWAY}/cows/${cowId}/latest`);
+                        if (cowRes.ok) {
+                            const cowData = await cowRes.json();
+                            
+                            if (cowData.risk_score < 0.50) {
+                                incident.consecutiveHealthyCycles += 1;
+                                incident.risk_score = cowData.risk_score; // Track current recovery state
+                            } else {
+                                incident.consecutiveHealthyCycles = 0; // Reset counter if risk surges again
+                                incident.risk_score = cowData.risk_score;
+                            }
+                        }
+                    } catch (e) { console.error(`Error querying cow ${cowId} profile:`, e); }
+
+                    // RECOVERY LOGIC: Alert only drops off once the cow maintains stability for 3 consecutive refresh cycles (15s)
+                    if (incident.consecutiveHealthyCycles >= 3) {
+                        latchedIncidents.delete(cowId);
                     }
-                    document.getElementById('incidents-container').innerHTML = html;
                 }
+
+                // Render Latched Incidents Panel Layout
+                let incidentsHtml = '';
+                document.getElementById('incident-count').innerText = latchedIncidents.size;
+                
+                if (latchedIncidents.size === 0) {
+                    incidentsHtml = '<div style="padding: 10px; color: #94a3b8;">🟢 Operational state normal. No persistent incidents in queue.</div>';
+                } else {
+                    latchedIncidents.forEach((incident, cowId) => {
+                        const isHealing = incident.consecutiveHealthyCycles > 0;
+                        incidentsHtml += `
+                            <div class="alert-row">
+                                <span class="critical">⚠️ LATCHED ALARM: Cow #${cowId}</span>
+                                <span>Risk Weight: ${incident.risk_score.toFixed(3)}</span>
+                                <span>First Detected: ${incident.timestamp}</span>
+                                ${isHealing ? `<span class="recovered">Stabilizing (Cycle ${incident.consecutiveHealthyCycles}/3)</span>` : '<span style="color: #ef4444; font-size: 12px;">Active Risk</span>'}
+                            </div>`;
+                    });
+                }
+                document.getElementById('incidents-container').innerHTML = incidentsHtml;
                 
                 document.getElementById('conn-status').innerText = 'LIVE STREAMING';
                 document.getElementById('conn-status').style.background = '#22c55e';
