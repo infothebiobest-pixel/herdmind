@@ -9,3 +9,4 @@ infra/influxdb/
 infra/grafana/storage/
 test_websocket.py
 watch_alerts.py
+.env

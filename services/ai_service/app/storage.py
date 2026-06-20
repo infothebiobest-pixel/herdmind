@@ -2,6 +2,7 @@
 HerdMind-X · Storage Layer
 Persists sensor readings, risk scores, predictions, and alerts to InfluxDB.
 """
+import os
 
 import logging
 from datetime import datetime, timezone
@@ -17,7 +18,7 @@ log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 INFLUX_URL = "http://herd_influx:8086"
-INFLUX_TOKEN  = "cfuR3oHFeBlAbbiIxas5OcXhTY3CZxkz1_QNkAlVrCu48Y6osB-loG7UcGvP1RlN1lRugY7qsAPgHZiu3JteEA=="
+INFLUX_TOKEN  = os.environ.get("INFLUX_TOKEN", "")
 INFLUX_ORG    = "herdmind"
 INFLUX_BUCKET = "herd_telemetry"
 

@@ -14,7 +14,11 @@ from pydantic import BaseModel
 import paho.mqtt.client as mqtt
 
 from app.ai.engines.prediction_engine import HerdAnomalyEngine, DiseaseClassifier
-from app.storage import write_reading, close as close_storage
+from app.storage import write_reading, query_cow_history, query_herd_summary, query_high_risk_cows, close as close_storage, _query_api, INFLUX_BUCKET
+from app.temporal_engine import rolling_stats, risk_trend, early_warning, herd_early_warnings, cow_timeline
+from fastapi import HTTPException
+from app.temporal_engine import rolling_stats, risk_trend, early_warning, herd_early_warnings, cow_timeline
+from fastapi import HTTPException
 
 # ================= LOGGING =================
 logging.basicConfig(level=logging.INFO)
@@ -264,6 +268,111 @@ def analyze(payload: SensorPayload):
         "disease": disease
     }
 
+
+HERD_IDS = [101, 102, 103, 104, 105]
+
+@app.get("/herd/summary")
+def summary(window_hours: int = 24):
+    return query_herd_summary(hours=window_hours)
+
+@app.get("/herd/at-risk")
+def at_risk(threshold: float = 0.8, hours: int = 24):
+    c = query_high_risk_cows(threshold=threshold, hours=hours)
+    return {"count": len(c), "cows": c}
+
+@app.get("/herd/critical")
+def critical():
+    c = query_high_risk_cows(threshold=0.9, hours=1)
+    return {"count": len(c), "cows": c}
+
+@app.get("/cows/{cow_id}/history")
+def history(cow_id: int, hours: int = 24):
+    return query_cow_history(str(cow_id), hours=hours)
+
+@app.get("/cows/{cow_id}/latest")
+def latest(cow_id: int):
+    h = query_cow_history(str(cow_id), hours=24)
+    if not h:
+        raise HTTPException(404, "No data")
+    return sorted(h, key=lambda x: x["time"], reverse=True)[0]
+
+@app.get("/alerts/recent")
+def alerts_recent(hours: int = 24, limit: int = 20):
+    flux = f'from(bucket:"{INFLUX_BUCKET}")|>range(start:-{hours}h)|>filter(fn:(r)=>r._measurement=="cow_reading")|>filter(fn:(r)=>r._field=="risk_score")|>filter(fn:(r)=>r._value>=0.8)|>sort(columns:["_time"],desc:true)|>limit(n:{limit})'
+    try:
+        tables = _query_api.query(flux)
+        return {"count": 0, "alerts": [{"time": r.get_time().isoformat(), "cow_id": r.values.get("cow_id"), "risk_score": round(r.get_value(), 4), "alert_level": r.values.get("alert_level", "WARNING")} for t in tables for r in t.records]}
+    except Exception as e:
+        return {"count": 0, "alerts": [], "error": str(e)}
+
+@app.get("/temporal/cow/{cow_id}/trend")
+def trend(cow_id: str, hours: int = 3):
+    return risk_trend(cow_id, hours=hours)
+
+@app.get("/temporal/cow/{cow_id}/warnings")
+def warnings(cow_id: str):
+    return early_warning(cow_id)
+
+@app.get("/temporal/herd/warnings")
+def herd_warnings():
+    return herd_early_warnings(HERD_IDS)
+
+@app.get("/temporal/cow/{cow_id}/timeline")
+def timeline(cow_id: str, hours: int = 24):
+    return cow_timeline(cow_id, hours=hours)
+
+
+HERD_IDS = [101, 102, 103, 104, 105]
+
+@app.get("/herd/summary")
+def summary(window_hours: int = 24):
+    return query_herd_summary(hours=window_hours)
+
+@app.get("/herd/at-risk")
+def at_risk(threshold: float = 0.8, hours: int = 24):
+    c = query_high_risk_cows(threshold=threshold, hours=hours)
+    return {"count": len(c), "cows": c}
+
+@app.get("/herd/critical")
+def critical():
+    c = query_high_risk_cows(threshold=0.9, hours=1)
+    return {"count": len(c), "cows": c}
+
+@app.get("/cows/{cow_id}/history")
+def history(cow_id: int, hours: int = 24):
+    return query_cow_history(str(cow_id), hours=hours)
+
+@app.get("/cows/{cow_id}/latest")
+def latest(cow_id: int):
+    h = query_cow_history(str(cow_id), hours=24)
+    if not h:
+        raise HTTPException(404, "No data")
+    return sorted(h, key=lambda x: x["time"], reverse=True)[0]
+
+@app.get("/alerts/recent")
+def alerts_recent(hours: int = 24, limit: int = 20):
+    flux = f'from(bucket:"{INFLUX_BUCKET}")|>range(start:-{hours}h)|>filter(fn:(r)=>r._measurement=="cow_reading")|>filter(fn:(r)=>r._field=="risk_score")|>filter(fn:(r)=>r._value>=0.8)|>sort(columns:["_time"],desc:true)|>limit(n:{limit})'
+    try:
+        tables = _query_api.query(flux)
+        return {"count": 0, "alerts": [{"time": r.get_time().isoformat(), "cow_id": r.values.get("cow_id"), "risk_score": round(r.get_value(), 4), "alert_level": r.values.get("alert_level", "WARNING")} for t in tables for r in t.records]}
+    except Exception as e:
+        return {"count": 0, "alerts": [], "error": str(e)}
+
+@app.get("/temporal/cow/{cow_id}/trend")
+def trend(cow_id: str, hours: int = 3):
+    return risk_trend(cow_id, hours=hours)
+
+@app.get("/temporal/cow/{cow_id}/warnings")
+def warnings(cow_id: str):
+    return early_warning(cow_id)
+
+@app.get("/temporal/herd/warnings")
+def herd_warnings():
+    return herd_early_warnings(HERD_IDS)
+
+@app.get("/temporal/cow/{cow_id}/timeline")
+def timeline(cow_id: str, hours: int = 24):
+    return cow_timeline(cow_id, hours=hours)
 @app.get("/health")
 def health():
     return {"status": "healthy"}

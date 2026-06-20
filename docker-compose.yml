@@ -40,7 +40,7 @@ services:
       - DOCKER_INFLUXDB_INIT_PASSWORD=herdmind123456
       - DOCKER_INFLUXDB_INIT_ORG=herdmind
       - DOCKER_INFLUXDB_INIT_BUCKET=herd_telemetry
-      - DOCKER_INFLUXDB_INIT_ADMIN_TOKEN=cfuR3oHFeBlAbbiIxas5OcXhTY3CZxkz1_QNkAlVrCu48Y6osB-loG7UcGvP1RlN1lRugY7qsAPgHZiu3JteEA==
+      - DOCKER_INFLUXDB_INIT_ADMIN_TOKEN=${INFLUX_TOKEN}
     volumes:
       - influx_data:/var/lib/influxdb2
     healthcheck:
@@ -100,6 +100,9 @@ services:
       PYTHONUNBUFFERED: "1"
       PYTHONPATH: "/app"
       MQTT_BROKER: herd_mosquitto
+      INFLUX_TOKEN: ${INFLUX_TOKEN}
+      INFLUX_ORG: ${INFLUX_ORG}
+      INFLUX_BUCKET: ${INFLUX_BUCKET}
     depends_on:
       influxdb:
         condition: service_healthy
@@ -116,6 +119,9 @@ services:
       PYTHONPATH: "/app"
       DATABASE_URL: "postgresql://herd:herd123@herd_postgres:5432/herdmind"
       MQTT_BROKER: herd_mosquitto
+      INFLUX_TOKEN: ${INFLUX_TOKEN}
+      INFLUX_ORG: ${INFLUX_ORG}
+      INFLUX_BUCKET: ${INFLUX_BUCKET}
     depends_on:
       postgres:
         condition: service_healthy
@@ -134,6 +140,9 @@ services:
       PYTHONPATH: "/app"
       REDIS_HOST: herd_redis
       MQTT_BROKER: herd_mosquitto
+      INFLUX_TOKEN: ${INFLUX_TOKEN}
+      INFLUX_ORG: ${INFLUX_ORG}
+      INFLUX_BUCKET: ${INFLUX_BUCKET}
     depends_on:
       redis:
         condition: service_healthy
