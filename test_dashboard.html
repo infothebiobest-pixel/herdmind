@@ -85,7 +85,7 @@ function renderAlert(e) {
     logEl.insertBefore(card, logEl.firstChild);
 }
 
-const mockToken = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJhZG1pbl9mYXJtZXIiLCJleHAiOjE3ODE5MzkzNTgsInJvbGUiOiJmYXJtX21hbmFnZXIifQ.x7acVBEFz2GVdOqGDAd65dBKf4dgerZNrgyVyD4DfDk";
+const mockToken = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJhZG1pbl9mYXJtZXIiLCJleHAiOjE3ODIwMjYzNzguMjA1NDU3Nywicm9sZSI6ImZhcm1fbWFuYWdlciJ9.yrpNrk1Efgk7CiQL2YcQQiJNxJEQUmlFvY_d9MLaeZk";
 const ws = new WebSocket(`ws://127.0.0.1:8000/ws/alerts?token=${mockToken}`);
 
 ws.onopen = () => { statusEl.className = "connected"; statusEl.innerText = "● Stream Running"; };

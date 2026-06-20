@@ -4,6 +4,7 @@ import time
 import logging
 import numpy as np
 import redis
+import redis
 import requests
 from typing import Optional
 from contextlib import asynccontextmanager
@@ -54,18 +55,23 @@ class SensorPayload(BaseModel):
     heart_rate: float = 70.0
 
 # ================= ALERT QUEUE =================
-def send_alert(payload, risk: float, level: str):
+def send_alert(payload, risk: float, level: str, disease: str = "Unknown"):
     body = {
+        "event_type": "AGENT_ALERT",
         "cow_id": str(payload.cow_id),
         "risk_score": risk,
-        "metrics": payload.model_dump(),
-        "alert_level": level
+        "alert_level": level,
+        "disease": disease,
+        "temperature": payload.temperature,
+        "rumination": payload.rumination,
+        "activity": payload.activity,
+        "message": f"Risk index {risk:.2f} — {disease}",
     }
     try:
-        r_client.lpush("herd:queue:raw_anomalies", json.dumps(body))
-        log.info(f"📥 Alert queued for cow={payload.cow_id}")
+        r_client.xadd("herd:alerts:stream", {"data": json.dumps(body)})
+        log.info(f"📡 Alert streamed for cow={payload.cow_id} level={level}")
     except Exception as e:
-        log.error(f"Redis queue error: {e}")
+        log.error(f"Redis stream error: {e}")
 
 # ================= MQTT =================
 def on_connect(client, userdata, flags, rc):
@@ -99,10 +105,16 @@ def on_message(client, userdata, msg):
         ml_label = str(disease_classifier.predict_disease(X)).upper()
 
         # ================= RULE ENGINE =================
-        if p.temperature > 39.5:
+        if p.conductivity > 8.0:
+            rule_label = "MASTITIS_INDICATORS"
+        elif p.temperature > 39.5:
             rule_label = "CRITICAL_HYPERTHERMIA"
         elif p.rumination < 200:
             rule_label = "SEVERE_RUMINATION_DROP"
+        elif p.activity < 30:
+            rule_label = "LAMENESS_INDICATORS"
+        elif risk >= RISK_THRESHOLD:
+            rule_label = "ANOMALY_DETECTED"
         else:
             rule_label = "NORMAL"
 
@@ -113,7 +125,7 @@ def on_message(client, userdata, msg):
             level = "CRITICAL" if risk >= CRITICAL_THRESHOLD or p.conductivity > 10 else "WARNING"
 
             if now - ALERT_COOLDOWN.get(cow_id, 0) > COOLDOWN_SEC:
-                send_alert(p, risk, level)
+                send_alert(p, risk, level, disease=rule_label)
                 ALERT_COOLDOWN[cow_id] = now
 
                 alert = {
