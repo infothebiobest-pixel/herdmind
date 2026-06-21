@@ -59,7 +59,28 @@ class SensorPayload(BaseModel):
     heart_rate: float = 70.0
 
 # ================= ALERT QUEUE =================
+import redis
+r_cache = redis.Redis(
+    host="herd_redis",
+    port=6379,
+    db=0,
+    socket_timeout=None,
+    socket_connect_timeout=5,
+    health_check_interval=30,
+    retry_on_timeout=True
+)
+
 def send_alert(payload, risk: float, level: str, disease: str = "Unknown"):
+    cow_id = str(payload.get("cow_id"))
+    cache_key = f"alert:latched:{cow_id}"
+    
+    # Check if this anomaly is already latched in Redis memory
+    if r_cache.exists(cache_key):
+        return  # Deduplicated! Skip alert spamming
+        
+    # Latch it for 2 hours (7200 seconds)
+    r_cache.setex(cache_key, 7200, f"{level}:{disease}")
+
     body = {
         "event_type": "AGENT_ALERT",
         "cow_id": str(payload.cow_id),

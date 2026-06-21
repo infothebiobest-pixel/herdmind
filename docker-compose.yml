@@ -107,6 +107,20 @@ services:
         condition: service_healthy
     logging: *default-logging
 
+  herd_whatsapp_worker:
+    container_name: herd_whatsapp_worker
+    restart: unless-stopped
+    build: ./services/ai_service
+    command: python app/whatsapp_worker.py
+    environment:
+      PYTHONUNBUFFERED: "1"
+      PYTHONPATH: "/app"
+      DATABASE_URL: "postgresql://herd:herd123@herd_postgres:5432/herdmind"
+    depends_on:
+      redis:
+        condition: service_healthy
+    logging: *default-logging
+
   ai_service:
     build: ./services/ai_service
     container_name: herd_ai_service
