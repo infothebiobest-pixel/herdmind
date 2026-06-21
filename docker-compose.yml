@@ -91,6 +91,22 @@ services:
     restart: unless-stopped
     logging: *default-logging
 
+  herd_brain:
+    container_name: herd_brain
+    restart: unless-stopped
+    build: ./services/ai_service
+    command: python app/temporal_brain.py
+    environment:
+      PYTHONUNBUFFERED: "1"
+      PYTHONPATH: "/app"
+      DATABASE_URL: "postgresql://herd:herd123@herd_postgres:5432/herdmind"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    logging: *default-logging
+
   ai_service:
     build: ./services/ai_service
     container_name: herd_ai_service
